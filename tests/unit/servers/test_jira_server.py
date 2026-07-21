@@ -892,6 +892,34 @@ async def test_batch_get_changelogs_tool(jira_client, mock_jira_fetcher):
 
 
 @pytest.mark.anyio
+async def test_batch_create_issues_accepts_native_array(jira_client, mock_jira_fetcher):
+    """Test that MCP callers can pass issues as a native JSON array."""
+    test_issues = [
+        {
+            "project_key": "TEST",
+            "summary": "Test Issue 1",
+            "issue_type": "Task",
+        },
+        {
+            "project_key": "TEST",
+            "summary": "Test Issue 2",
+            "issue_type": "Bug",
+        },
+    ]
+
+    response = await jira_client.call_tool(
+        "jira_batch_create_issues",
+        {"issues": test_issues, "validate_only": False},
+    )
+
+    content = json.loads(response.content[0].text)
+    assert len(content["issues"]) == 2
+    mock_jira_fetcher.batch_create_issues.assert_called_once_with(
+        test_issues, validate_only=False
+    )
+
+
+@pytest.mark.anyio
 async def test_batch_get_changelogs_not_cloud(jira_client, mock_jira_fetcher):
     """Ensure jira_batch_get_changelogs errors on server/DC."""
     mock_jira_fetcher.config.is_cloud = False

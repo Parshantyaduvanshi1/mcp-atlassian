@@ -794,10 +794,11 @@ async def create_issue(
 async def batch_create_issues(
     ctx: Context,
     issues: Annotated[
-        str,
+        list[dict[str, Any]] | str,
         Field(
             description=(
-                "JSON array of issue objects. Each object should contain:\n"
+                "Array of issue objects. A JSON-encoded array string is also "
+                "accepted for backward compatibility. Each object should contain:\n"
                 "- project_key (required): The project key (e.g., 'PROJ')\n"
                 "- summary (required): Issue summary/title\n"
                 "- issue_type (required): Type of issue (e.g., 'Task', 'Bug')\n"
@@ -823,26 +824,28 @@ async def batch_create_issues(
 
     Args:
         ctx: The FastMCP context.
-        issues: JSON array string of issue objects.
+        issues: Issue objects as an array or a JSON-encoded array string.
         validate_only: If true, only validates without creating.
 
     Returns:
         JSON string indicating success and listing created issues (or validation result).
 
     Raises:
-        ValueError: If in read-only mode, Jira client unavailable, or invalid JSON.
+        ValueError: If in read-only mode, Jira client unavailable, or input is invalid.
     """
     jira = await get_jira_fetcher(ctx)
-    # Parse issues from JSON string
-    try:
-        issues_list = json.loads(issues)
-        if not isinstance(issues_list, list):
-            raise ValueError("Input 'issues' must be a JSON array string.")
-    except json.JSONDecodeError:
-        raise ValueError("Invalid JSON in issues")
-    except Exception as e:
-        msg = f"Invalid input for issues: {e}"
-        raise ValueError(msg) from e
+    if isinstance(issues, str):
+        try:
+            issues_list = json.loads(issues)
+        except json.JSONDecodeError as e:
+            raise ValueError("Invalid JSON in issues") from e
+    else:
+        issues_list = issues
+
+    if not isinstance(issues_list, list) or not all(
+        isinstance(issue, dict) for issue in issues_list
+    ):
+        raise ValueError("Input 'issues' must be an array of issue objects.")
 
     # Create issues in batch
     created_issues = jira.batch_create_issues(issues_list, validate_only=validate_only)
