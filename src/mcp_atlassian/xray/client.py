@@ -129,3 +129,42 @@ class XrayClient:
             logger.debug(
                 f"Added custom headers: {get_masked_session_headers(self.config.custom_headers)}"
             )
+
+    def get_test_runs_in_context(
+        self,
+        test_exec_key: str,
+        test_key: str | None = None,
+        include_test_fields: str | None = None,
+        limit: int | None = None,
+        page: int | None = None,
+    ) -> Any:
+        """Retrieve test runs from a Test Execution using Xray REST API v2.
+
+        The contextual endpoint returns the run status and execution metadata and
+        can include selected custom fields from the associated Test issue. The
+        upstream Xray client defaults to API v1, so this method builds the v2 URL
+        explicitly without changing the API version used by other operations.
+
+        Args:
+            test_exec_key: Test Execution issue key.
+            test_key: Optional Test issue key used to limit the results.
+            include_test_fields: Optional comma-separated Test issue fields to
+                include in each result.
+            limit: Optional maximum number of test runs per page.
+            page: Optional page number.
+
+        Returns:
+            The response returned by the Xray contextual test-runs endpoint.
+        """
+        params: dict[str, str | int] = {"testExecKey": test_exec_key}
+        if test_key:
+            params["testKey"] = test_key
+        if include_test_fields:
+            params["includeTestFields"] = include_test_fields
+        if limit is not None:
+            params["limit"] = limit
+        if page is not None:
+            params["page"] = page
+
+        url = self.xray.resource_url("testruns", api_version="2.0")
+        return self.xray.get(url, params=params)

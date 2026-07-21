@@ -155,6 +155,34 @@ MOCK_XRAY_TEST_RUNS_RESPONSE = [
     },
 ]
 
+MOCK_XRAY_TEST_RUNS_IN_CONTEXT_RESPONSE = [
+    {
+        "id": 12345,
+        "testExecKey": "EXEC-001",
+        "testKey": "TEST-001",
+        "status": "PASS",
+        "steps": [
+            {
+                "status": "PASS",
+                "actualResult": "Application login completed successfully",
+                "defects": [],
+                "evidences": [],
+            }
+        ],
+        "evidences": [
+            {
+                "filename": "execution-log.txt",
+                "contentType": "text/plain",
+                "data": "https://jira.example.com/xray/evidence/9001",
+            }
+        ],
+        "testIssueFields": {
+            "summary": "Validate application login",
+            "customfield_12345": "Automated",
+        },
+    }
+]
+
 # Mock Test Status Data - Updated with real API response
 MOCK_XRAY_TEST_STATUSES_RESPONSE = [
     {
