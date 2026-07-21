@@ -27,6 +27,7 @@ dependencies = [
     "cachetools>=5.0.0",
     "types-cachetools>=5.5.0.20240820",
     "prometheus-client>=0.21.0",
+    "markitdown[pdf]>=0.1.0",
 ]
 [[project.authors]]
 name = "SharkyND"
