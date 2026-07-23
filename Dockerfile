@@ -1,5 +1,8 @@
-# Use a Python image with uv pre-installed
-FROM ghcr.io/astral-sh/uv:python3.10-alpine AS uv
+# Use a Python image with uv pre-installed.
+# NOTE: a glibc-based image (Debian bookworm-slim) is required rather than
+# Alpine/musl, because onnxruntime (pulled in transitively via
+# markitdown -> magika) only ships manylinux wheels and has no musllinux wheels.
+FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim AS uv
 
 # Install the project into `/app`
 WORKDIR /app
@@ -36,10 +39,10 @@ RUN find /app/.venv -name '__pycache__' -type d -exec rm -rf {} + && \
     echo "Cleaned up .venv"
 
 # Final stage
-FROM python:3.10-alpine
+FROM python:3.10-slim-bookworm
 
 # Create a non-root user 'app'
-RUN adduser -D -h /home/app -s /bin/sh app
+RUN useradd --create-home --home-dir /home/app --shell /bin/sh app
 WORKDIR /app
 USER app
 
