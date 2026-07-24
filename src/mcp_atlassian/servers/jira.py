@@ -1,5 +1,7 @@
 """Jira FastMCP server instance and tool definitions."""
 
+import asyncio
+import functools
 import json
 import logging
 import mimetypes
@@ -8,6 +10,7 @@ from urllib.parse import quote, unquote
 
 from fastmcp import Context, FastMCP
 from fastmcp.resources import FunctionResource
+from fastmcp.tools.tool import ToolResult
 from pydantic import Field
 from requests.exceptions import HTTPError
 
@@ -20,6 +23,85 @@ from mcp_atlassian.servers.dependencies import get_jira_fetcher
 from mcp_atlassian.utils.decorators import check_write_access
 
 logger = logging.getLogger(__name__)
+
+# File extensions supported by markitdown for attachment summarization.
+_SUMMARIZABLE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        # Documents
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".xls",
+        ".csv",
+        ".json",
+        ".xml",
+        # Images
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".webp",
+    }
+)
+
+# Image extensions — returned as viewable image content by
+# ``jira_get_attachment_images`` so a vision-capable client model can see them.
+_IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".tif", ".webp"}
+)
+
+# Image file extension -> format string accepted by MCP ImageContent / vision models.
+_IMAGE_FORMAT_MAP: dict[str, str] = {
+    ".jpg": "jpeg",
+    ".jpeg": "jpeg",
+    ".png": "png",
+    ".gif": "gif",
+    ".webp": "webp",
+    ".bmp": "bmp",
+    ".tiff": "tiff",
+    ".tif": "tiff",
+}
+
+
+def _summarize_content_with_markitdown(
+    content: bytes,
+    filename: str,
+    md_instance: Any | None = None,
+) -> str:
+    """Convert raw attachment bytes to Markdown text using MarkItDown.
+
+    Supports PDFs (text extraction), images (EXIF metadata), and Office
+    documents.  Raises ``ImportError`` if ``markitdown`` is not installed.
+    Pass a pre-built ``md_instance`` to avoid re-initialization overhead when
+    processing multiple files.
+    """
+    if md_instance is None:
+        try:
+            from markitdown import MarkItDown  # type: ignore[import-untyped]
+        except ImportError as exc:
+            raise ImportError(
+                "markitdown is required for attachment summarization. "
+                "Install it with: uv add 'markitdown[pdf]'"
+            ) from exc
+        md_instance = MarkItDown(enable_plugins=False)
+
+    import io
+    from pathlib import Path as _Path
+
+    ext = _Path(filename).suffix.lower()
+    try:
+        stream = io.BytesIO(content)
+        result = md_instance.convert_stream(stream, file_extension=ext)
+        text = (result.text_content or "").strip()
+        return text if text else "[No extractable text content found]"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("MarkItDown could not convert '%s': %s", filename, exc)
+        return f"[Conversion failed: {exc}]"
+
 
 jira_mcp = FastMCP(
     name="Jira MCP Service",
@@ -2305,4 +2387,419 @@ async def jira_upload_attachment(
         },
         indent=2,
         ensure_ascii=False,
+    )
+
+
+_ATTACHMENT_DOWNLOAD_TIMEOUT = 60  # seconds per attachment download
+
+# Maximum bytes to download per attachment. Prevents memory exhaustion from
+# very large attachments and matches the AttachmentCache default cap used by
+# the existing download tooling in ``jira/attachments.py``.
+_ATTACHMENT_MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def _download_attachment_bytes(jira_session: Any, url: str) -> bytes:
+    """Download raw attachment bytes via an authenticated Jira session.
+
+    Streams the response and enforces a per-file size cap
+    (:data:`_ATTACHMENT_MAX_DOWNLOAD_BYTES`) to avoid loading arbitrarily large
+    attachments into memory.
+
+    Raises:
+        ValueError: if the attachment exceeds the maximum allowed size.
+    """
+    resp = jira_session.get(url, stream=True, timeout=_ATTACHMENT_DOWNLOAD_TIMEOUT)
+    resp.raise_for_status()
+    try:
+        buffer = bytearray()
+        for chunk in resp.iter_content(chunk_size=8192):
+            if not chunk:
+                continue
+            buffer.extend(chunk)
+            if len(buffer) > _ATTACHMENT_MAX_DOWNLOAD_BYTES:
+                raise ValueError(
+                    "Attachment exceeds maximum allowed size "
+                    f"({_ATTACHMENT_MAX_DOWNLOAD_BYTES} bytes)"
+                )
+        return bytes(buffer)
+    finally:
+        resp.close()
+
+
+def _build_attachment_summary(
+    jira_session: Any,
+    att: dict,
+    filter_names: set[str] | None,
+    max_chars: int,
+    md_instance: Any | None = None,
+) -> tuple[str | None, dict | None]:
+    """Process a single Jira attachment dict into a summary entry.
+
+    Returns:
+        (skip_filename, summary_dict) — exactly one of the two is *not* ``None``.
+        ``skip_filename`` is set when the file should be skipped (unsupported type
+        or filtered out).  ``summary_dict`` is set for processed / failed files.
+
+    Raises:
+        ImportError: propagated from :func:`_summarize_content_with_markitdown`
+            when ``markitdown`` is not installed.
+    """
+    from pathlib import Path as _Path
+
+    filename: str = att.get("filename", "")
+    url: str = att.get("content", "")
+    size: int = att.get("size", 0)
+    mime_type: str = att.get("mimeType", "application/octet-stream")
+    base_info = {"filename": filename, "size": size, "mime_type": mime_type}
+
+    if filter_names and filename not in filter_names:
+        return filename, None
+
+    ext = _Path(filename).suffix.lower()
+    if ext not in _SUMMARIZABLE_EXTENSIONS:
+        logger.info("Skipping unsupported attachment: %s (%s)", filename, mime_type)
+        return filename, None
+
+    if not url:
+        return None, {
+            **base_info,
+            "success": False,
+            "error": "No download URL available.",
+        }
+
+    try:
+        content_bytes = _download_attachment_bytes(jira_session, url)
+    except Exception as dl_exc:
+        return None, {
+            **base_info,
+            "success": False,
+            "error": f"Download failed: {dl_exc}",
+        }
+
+    markdown_text = _summarize_content_with_markitdown(
+        content_bytes, filename, md_instance
+    )
+    if max_chars and len(markdown_text) > max_chars:
+        markdown_text = (
+            markdown_text[:max_chars]
+            + f"\n\n[...truncated — {len(markdown_text):,} chars total]"
+        )
+    return None, {**base_info, "success": True, "markdown_content": markdown_text}
+
+
+@jira_mcp.tool(tags={"jira", "read"})
+async def summarize_attachments(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key whose attachments should be summarized (e.g., 'PROJ-123')"
+        ),
+    ],
+    filename_filter: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) Comma-separated list of specific filenames to process. "
+                "When omitted all supported attachments in the issue are processed."
+            ),
+            default=None,
+        ),
+    ] = None,
+    max_chars_per_file: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum characters of extracted text to include per file in the response. "
+                "Use 0 for no limit. Default is 4000."
+            ),
+            default=4000,
+            ge=0,
+        ),
+    ] = 4000,
+) -> str:
+    """Scan and summarize attachments (PDFs, images, Office documents) from a Jira issue.
+
+    Uses Microsoft MarkItDown to extract readable content from each supported attachment:
+
+    • **PDF**          → full text extracted via pdfminer
+    • **Images**       → EXIF metadata (for a visual description use jira_get_attachment_images)
+    • **DOCX / PPTX / XLSX** → document text and structure as Markdown
+    • **CSV / JSON / XML**   → raw content rendered as Markdown
+
+    Unsupported file types (e.g., zip, mp4, exe) are skipped and listed under
+    ``"skipped"`` in the response.
+
+    Requires the ``markitdown`` package — add it with:
+        uv add 'markitdown[pdf]'
+
+    To have a vision-capable model *see* image attachments (screenshots, diagrams,
+    charts), use ``jira_get_attachment_images`` instead — it returns the raw images
+    as content blocks your model can view directly.
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key (e.g., 'PROJ-123').
+        filename_filter: Optional comma-separated list of filenames to process.
+        max_chars_per_file: Truncation limit per file in characters (0 = unlimited).
+
+    Returns:
+        JSON string with per-attachment summaries including extracted markdown content.
+    """
+    jira = await get_jira_fetcher(ctx)
+
+    issue_data = jira.jira.issue(issue_key, fields="attachment")
+    if not isinstance(issue_data, dict) or "fields" not in issue_data:
+        return json.dumps(
+            {"success": False, "error": f"Could not retrieve issue {issue_key}"},
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    raw_attachments = issue_data.get("fields", {}).get("attachment", []) or []
+    if not raw_attachments:
+        return json.dumps(
+            {
+                "success": True,
+                "issue_key": issue_key,
+                "message": "No attachments found on this issue.",
+                "summaries": [],
+                "skipped": [],
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    filter_names: set[str] | None = None
+    if filename_filter:
+        filter_names = {n.strip() for n in filename_filter.split(",") if n.strip()}
+
+    # Create MarkItDown once and share across all document workers.
+    try:
+        from markitdown import MarkItDown  # type: ignore[import-untyped]
+
+        md_instance: Any = MarkItDown(enable_plugins=False)
+    except ImportError as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": f"{exc}  \u2014  Install with: uv add 'markitdown[pdf]'",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    summaries: list[dict] = []
+    skipped: list[str] = []
+
+    from pathlib import Path as _Path
+
+    # Collect supported attachments; unsupported types are skipped.
+    doc_atts: list[dict] = []
+    for att in raw_attachments:
+        if not isinstance(att, dict):
+            continue
+        fn = att.get("filename", "")
+        if filter_names and fn not in filter_names:
+            skipped.append(fn)
+            continue
+        ext = _Path(fn).suffix.lower()
+        if ext not in _SUMMARIZABLE_EXTENSIONS:
+            skipped.append(fn)
+            continue
+        doc_atts.append(att)
+
+    # Run MarkItDown concurrently in thread-pool workers.
+    doc_tasks = [
+        asyncio.to_thread(
+            functools.partial(
+                _build_attachment_summary,
+                jira.jira._session,
+                att,
+                None,  # filter already applied above
+                max_chars_per_file,
+                md_instance,
+            )
+        )
+        for att in doc_atts
+    ]
+    doc_results = await asyncio.gather(*doc_tasks, return_exceptions=True)
+    for res in doc_results:
+        if isinstance(res, ImportError):
+            return json.dumps(
+                {"success": False, "error": str(res)}, indent=2, ensure_ascii=False
+            )
+        if isinstance(res, BaseException):
+            logger.warning("Unexpected error processing document attachment: %s", res)
+            summaries.append(
+                {"filename": "unknown", "success": False, "error": str(res)}
+            )
+            continue
+        _, summary = res
+        if summary is not None:
+            summaries.append(summary)
+
+    processed = sum(1 for s in summaries if s.get("success"))
+    failed = sum(1 for s in summaries if not s.get("success"))
+
+    return json.dumps(
+        {
+            "success": True,
+            "issue_key": issue_key,
+            "total_attachments": len(raw_attachments),
+            "processed": processed,
+            "failed": failed,
+            "skipped_count": len(skipped),
+            "skipped": skipped,
+            "summaries": summaries,
+        },
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@jira_mcp.tool(tags={"jira", "read"})
+async def get_attachment_images(
+    ctx: Context,
+    issue_key: Annotated[
+        str,
+        Field(
+            description="Jira issue key whose image attachments should be fetched (e.g., 'PROJ-123')"
+        ),
+    ],
+    filename_filter: Annotated[
+        str | None,
+        Field(
+            description=(
+                "(Optional) Comma-separated list of specific image filenames to fetch. "
+                "When omitted all image attachments on the issue are returned."
+            ),
+            default=None,
+        ),
+    ] = None,
+    max_images: Annotated[
+        int,
+        Field(
+            description="Maximum number of images to return (default: 10).",
+            default=10,
+            ge=1,
+        ),
+    ] = 10,
+) -> ToolResult:
+    """Fetch image attachments from a Jira issue as viewable image content.
+
+    Returns each image as an MCP image content block so a vision-capable model can
+    see and describe it directly — no MarkItDown text extraction and no MCP
+    sampling required. Works with any client whose own model supports images
+    (e.g., Claude, GPT-4o, Bedrock vision models).
+
+    Non-image attachments are ignored; use ``jira_summarize_attachments`` for
+    documents (PDF / DOCX / XLSX / CSV / …).
+
+    Args:
+        ctx: The FastMCP context.
+        issue_key: Jira issue key (e.g., 'PROJ-123').
+        filename_filter: Optional comma-separated list of image filenames to fetch.
+        max_images: Maximum number of images to return (default: 10).
+
+    Returns:
+        A ToolResult whose content holds one image block per attachment (each
+        preceded by a text label) and whose structured content lists the image
+        metadata plus any download failures.
+    """
+    from pathlib import Path as _Path
+
+    from fastmcp.utilities.types import Image
+    from mcp.types import TextContent
+
+    jira = await get_jira_fetcher(ctx)
+
+    issue_data = jira.jira.issue(issue_key, fields="attachment")
+    if not isinstance(issue_data, dict) or "fields" not in issue_data:
+        return ToolResult(
+            content=[
+                TextContent(type="text", text=f"Could not retrieve issue {issue_key}.")
+            ],
+            structured_content={
+                "success": False,
+                "error": f"Could not retrieve issue {issue_key}",
+            },
+        )
+
+    raw_attachments = issue_data.get("fields", {}).get("attachment", []) or []
+
+    filter_names: set[str] | None = None
+    if filename_filter:
+        filter_names = {n.strip() for n in filename_filter.split(",") if n.strip()}
+
+    image_atts: list[dict] = []
+    for att in raw_attachments:
+        if not isinstance(att, dict):
+            continue
+        fn = att.get("filename", "")
+        if filter_names and fn not in filter_names:
+            continue
+        if _Path(fn).suffix.lower() in _IMAGE_EXTENSIONS:
+            image_atts.append(att)
+
+    image_atts = image_atts[:max_images]
+
+    if not image_atts:
+        return ToolResult(
+            content=[
+                TextContent(
+                    type="text", text=f"No image attachments found on {issue_key}."
+                )
+            ],
+            structured_content={
+                "success": True,
+                "issue_key": issue_key,
+                "images": [],
+                "failed": [],
+            },
+        )
+
+    # Download all image bytes in parallel.
+    download_results = await asyncio.gather(
+        *(
+            asyncio.to_thread(
+                _download_attachment_bytes,
+                jira.jira._session,
+                att.get("content", ""),
+            )
+            for att in image_atts
+        ),
+        return_exceptions=True,
+    )
+
+    content_blocks: list[Any] = []
+    image_meta: list[dict] = []
+    failed: list[dict] = []
+    for att, result in zip(image_atts, download_results, strict=True):
+        filename = att.get("filename", "")
+        base = {
+            "filename": filename,
+            "size": att.get("size", 0),
+            "mime_type": att.get("mimeType", "application/octet-stream"),
+        }
+        if isinstance(result, BaseException):
+            failed.append({**base, "error": f"Download failed: {result}"})
+            continue
+        fmt = _IMAGE_FORMAT_MAP.get(_Path(filename).suffix.lower(), "png")
+        content_blocks.append(
+            TextContent(type="text", text=f"Image attachment: {filename}")
+        )
+        content_blocks.append(Image(data=result, format=fmt).to_image_content())
+        image_meta.append(base)
+
+    return ToolResult(
+        content=content_blocks,
+        structured_content={
+            "success": len(failed) == 0,
+            "issue_key": issue_key,
+            "total_images": len(image_atts),
+            "returned": len(image_meta),
+            "images": image_meta,
+            "failed": failed,
+        },
     )
