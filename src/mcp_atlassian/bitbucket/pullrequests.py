@@ -111,7 +111,11 @@ class PullRequestsMixin(BitbucketClient):
             raise Exception(msg) from e
 
     def get_pull_request_commits(
-        self, workspace: str, repository: str, pull_request_id: int
+        self,
+        workspace: str,
+        repository: str,
+        pull_request_id: int,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get commits associated with a pull request.
@@ -120,6 +124,7 @@ class PullRequestsMixin(BitbucketClient):
             workspace: Workspace name (Cloud) or project key (Server/DC)
             repository: Repository name
             pull_request_id: Pull request ID
+            limit: Maximum number of commits to return. If None, returns all commits.
 
         Returns:
             List of commit data
@@ -128,10 +133,13 @@ class PullRequestsMixin(BitbucketClient):
             MCPAtlassianAuthenticationError: If authentication fails with the Bitbucket API (401/403)
         """
         try:
-            # Use the base class method that implements the actual API call
-            return self.bitbucket.get_pull_requests_commits(
+            # SDK returns a generator — materialise entries up to limit, or all if limit is None
+            gen = self.bitbucket.get_pull_requests_commits(
                 workspace, repository, pull_request_id
             )
+            if limit is None:
+                return list(gen)
+            return [c for _, c in zip(range(limit), gen, strict=False)]
         except HTTPError as http_err:
             if http_err.response is not None and http_err.response.status_code in [
                 401,
@@ -150,6 +158,78 @@ class PullRequestsMixin(BitbucketClient):
             error_msg = f"Error getting commits for PR {pull_request_id} in {workspace}/{repository}: {str(e)}"
             logger.error(error_msg)
             msg = f"Error getting PR commits: {str(e)}"
+            raise Exception(msg) from e
+
+    def get_commit_builds(
+        self, workspace: str, repository: str, commit_id: str, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """
+        Get all CI/CD build statuses for a specific commit.
+
+        Uses the Bitbucket UI API for Server/DC (returns full build details
+        including state, key, name, description, and URL for each pipeline).
+        Falls back to the build-status REST API for Cloud.
+
+        Args:
+            workspace: Workspace name (Cloud) or project key (Server/DC)
+            repository: Repository name
+            commit_id: Full commit hash
+            limit: Maximum number of builds to return. If None, returns all builds.
+
+        Returns:
+            List of build status dicts, each containing state, key, name, url, etc.
+
+        Raises:
+            MCPAtlassianAuthenticationError: If authentication fails (401/403)
+        """
+        try:
+            if self.config.is_cloud:
+                # Cloud: use the standard build-status REST API
+                endpoint = f"projects/{workspace}/repos/{repository}/commits/{commit_id}/builds"
+                params: dict[str, Any] = {} if limit is None else {"limit": limit}
+                response = self.bitbucket.get(endpoint, params=params)
+                if isinstance(response, dict):
+                    return response.get("values", [])
+                return []
+            else:
+                # Server/DC: use the UI API which returns rich build details
+                url = (
+                    f"{self.config.url.rstrip('/')}/rest/ui/latest"
+                    f"/projects/{workspace}/repos/{repository}/builds"
+                )
+                dc_params: dict[str, Any] = {
+                    "at": commit_id,
+                    "start": 0,
+                    "avatarSize": 48,
+                }
+                if limit is not None:
+                    dc_params["limit"] = limit
+                resp = self.bitbucket._session.get(url, params=dc_params)
+                resp.raise_for_status()
+                data = resp.json()
+                # Response structure varies: {"page": {"values": [...]}} or {"values": [...]}
+                if isinstance(data, dict):
+                    page = data.get("page", data)
+                    return page.get("values", []) if isinstance(page, dict) else []
+                return []
+        except HTTPError as http_err:
+            if http_err.response is not None and http_err.response.status_code in [
+                401,
+                403,
+            ]:
+                error_msg = (
+                    f"Authentication failed for Bitbucket API ({http_err.response.status_code}). "
+                    "Token may be expired or invalid. Please verify credentials."
+                )
+                logger.error(error_msg)
+                raise MCPAtlassianAuthenticationError(error_msg) from http_err
+            else:
+                logger.error(f"HTTP error during API call: {http_err}", exc_info=False)
+                raise http_err
+        except Exception as e:
+            error_msg = f"Error getting builds for commit {commit_id} in {workspace}/{repository}: {str(e)}"
+            logger.error(error_msg)
+            msg = f"Error getting commit builds: {str(e)}"
             raise Exception(msg) from e
 
     def get_pull_requests(
