@@ -1,6 +1,7 @@
 """Module for Jira search operations."""
 
 import logging
+from typing import Any
 
 import requests
 from requests.exceptions import HTTPError
@@ -85,74 +86,33 @@ class SearchMixin(JiraClient, IssueOperationsProto):
             else:
                 fields_param = fields
 
-            if self.config.is_cloud:
-                actual_total = -1
-                try:
-                    # Call 1: Get metadata (including total) using standard search API
-                    metadata_params = {"jql": jql, "maxResults": 0}
-                    metadata_response = self.jira.get(
-                        self.jira.resource_url("search"), params=metadata_params
-                    )
+            # Use POST for all JQL searches to avoid URL length limits with large
+            # queries (e.g. 150-180 AND/OR clauses). The Jira REST API accepts
+            # POST on /rest/api/2/search with the JQL and options in the body,
+            # which has no practical length limit unlike GET query parameters.
+            response = self._jql_search_post(
+                jql=jql,
+                fields_param=fields_param,
+                start=start,
+                limit=limit,
+                expand=expand,
+                is_cloud=self.config.is_cloud,
+            )
 
-                    if (
-                        isinstance(metadata_response, dict)
-                        and "total" in metadata_response
-                    ):
-                        try:
-                            actual_total = int(metadata_response["total"])
-                        except (ValueError, TypeError):
-                            logger.warning(
-                                f"Could not parse 'total' from metadata response for JQL: {jql}. Received: {metadata_response.get('total')}"
-                            )
-                    else:
-                        logger.warning(
-                            f"Could not retrieve total count from metadata response for JQL: {jql}. Response type: {type(metadata_response)}"
-                        )
-                except Exception as meta_err:
-                    logger.error(
-                        f"Error fetching metadata for JQL '{jql}': {str(meta_err)}"
-                    )
-
-                # Call 2: Get the actual issues using the enhanced method
-                issues_response_list = self.jira.enhanced_jql_get_list_of_tickets(
-                    jql, fields=fields_param, limit=limit, expand=expand
+            if not isinstance(response, dict):
+                msg = (
+                    "Unexpected return value type from JQL POST search:"
+                    f" {type(response)}"
                 )
+                logger.error(msg)
+                raise TypeError(msg)
 
-                if not isinstance(issues_response_list, list):
-                    msg = f"Unexpected return value type from `jira.enhanced_jql_get_list_of_tickets`: {type(issues_response_list)}"
-                    logger.error(msg)
-                    raise TypeError(msg)
-
-                response_dict_for_model = {
-                    "issues": issues_response_list,
-                    "total": actual_total,
-                }
-
-                search_result = JiraSearchResult.from_api_response(
-                    response_dict_for_model,
-                    base_url=self.config.url,
-                    requested_fields=fields_param,
-                )
-
-                # Return the full search result object
-                return search_result
-            else:
-                limit = min(limit, 50)
-                response = self.jira.jql(
-                    jql, fields=fields_param, start=start, limit=limit, expand=expand
-                )
-                if not isinstance(response, dict):
-                    msg = f"Unexpected return value type from `jira.jql`: {type(response)}"
-                    logger.error(msg)
-                    raise TypeError(msg)
-
-                # Convert the response to a search result model
-                search_result = JiraSearchResult.from_api_response(
-                    response, base_url=self.config.url, requested_fields=fields_param
-                )
-
-                # Return the full search result object
-                return search_result
+            search_result = JiraSearchResult.from_api_response(
+                response,
+                base_url=self.config.url,
+                requested_fields=fields_param,
+            )
+            return search_result
 
         except HTTPError as http_err:
             if http_err.response is not None and http_err.response.status_code in [
@@ -172,6 +132,65 @@ class SearchMixin(JiraClient, IssueOperationsProto):
             logger.error(f"Error searching issues with JQL '{jql}': {str(e)}")
             msg = f"Error searching issues: {str(e)}"
             raise Exception(msg) from e
+
+    def _jql_search_post(
+        self,
+        jql: str,
+        fields_param: str | None,
+        start: int,
+        limit: int,
+        expand: str | None,
+        *,
+        is_cloud: bool,
+    ) -> dict[str, Any]:
+        """Execute a JQL search using HTTP POST to avoid URL length limits.
+
+        The Jira REST API accepts POST on /rest/api/2/search with all search
+        parameters in the JSON body. This sidesteps the URL query-string length
+        limits that cause GET requests with large JQL strings (≥ ~150 AND/OR
+        clauses) to fail silently or with HTTP 414/400 errors.
+
+        Args:
+            jql: JQL query string (may be arbitrarily long).
+            fields_param: Comma-separated field list, "*all", or None for default.
+            start: Zero-based starting offset for pagination.
+            limit: Maximum number of issues to return.
+            expand: Optional comma-separated list of items to expand.
+            is_cloud: Whether the target is Jira Cloud (caps maxResults at 100).
+
+        Returns:
+            Raw dict response from /rest/api/2/search containing ``issues``,
+            ``total``, ``startAt``, and ``maxResults``.
+        """
+        max_results = min(limit, 100) if is_cloud else min(limit, 50)
+
+        body: dict[str, Any] = {
+            "jql": jql,
+            "startAt": start,
+            "maxResults": max_results,
+        }
+
+        if fields_param:
+            if fields_param == "*all":
+                body["fields"] = ["*all"]
+            else:
+                body["fields"] = [
+                    f.strip() for f in fields_param.split(",") if f.strip()
+                ]
+
+        if expand:
+            body["expand"] = [e.strip() for e in expand.split(",") if e.strip()]
+
+        url = self.jira.resource_url("search")
+        logger.debug("JQL POST search to %s (jql length=%d)", url, len(jql))
+        response = self.jira.post(url, json=body)
+
+        if not isinstance(response, dict):
+            msg = f"Unexpected response type from JQL POST search: {type(response)}"
+            logger.error(msg)
+            raise TypeError(msg)
+
+        return response
 
     def get_board_issues(
         self,
