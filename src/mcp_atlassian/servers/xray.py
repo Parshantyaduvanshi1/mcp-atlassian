@@ -146,6 +146,82 @@ async def get_test_runs_with_environment(
 
 
 @xray_mcp.tool(tags={"xray", "read"})
+async def get_test_runs_in_context(
+    ctx: Context,
+    test_exec_key: Annotated[
+        str,
+        Field(description="The Test Execution issue key (e.g., 'EXEC-001')"),
+    ],
+    test_key: Annotated[
+        str | None,
+        Field(
+            description="Optional Test issue key used to limit the results",
+            default=None,
+        ),
+    ] = None,
+    include_test_fields: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional comma-separated Test issue fields to include, such as "
+                "'summary,customfield_12345'"
+            ),
+            default=None,
+        ),
+    ] = None,
+    limit: Annotated[
+        int,
+        Field(
+            description="Maximum number of test runs per page (default: 10)",
+            default=10,
+            ge=1,
+            le=100,
+        ),
+    ] = 10,
+    page: Annotated[
+        int,
+        Field(description="Page number (default: 1)", default=1, ge=1),
+    ] = 1,
+) -> str:
+    """Retrieve detailed test runs from a Test Execution context.
+
+    This exposes Xray's contextual test-run endpoint, including run IDs, status,
+    execution metadata, steps when available, evidence, and requested custom fields
+    from the associated Test issue. A returned run ID can also be passed to
+    ``get_test_run`` for the complete individual run representation.
+
+    Args:
+        ctx: The FastMCP context.
+        test_exec_key: The Test Execution issue key.
+        test_key: Optional Test issue key used to limit the results.
+        include_test_fields: Optional comma-separated Test issue fields to include.
+        limit: Maximum number of test runs per page.
+        page: Page number.
+
+    Returns:
+        JSON string containing the contextual test runs.
+
+    Raises:
+        ValueError: If the Xray client is not configured or available.
+    """
+    xray = await get_xray_fetcher(ctx)
+    try:
+        result = xray.get_test_runs_in_context(
+            test_exec_key=test_exec_key,
+            test_key=test_key,
+            include_test_fields=include_test_fields,
+            limit=limit,
+            page=page,
+        )
+        return json.dumps(result, indent=2, default=str)
+    except Exception as e:
+        logger.error(
+            f"Error retrieving test runs in Test Execution {test_exec_key}: {e}"
+        )
+        raise
+
+
+@xray_mcp.tool(tags={"xray", "read"})
 async def get_test_preconditions(
     ctx: Context,
     test_key: Annotated[

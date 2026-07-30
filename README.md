@@ -1044,6 +1044,9 @@ A per-product header always takes precedence over the global header for that pro
 - `get_tests`: Retrieve information about specific tests
 - `get_test_statuses`: Get all available test statuses
 - `get_test_runs`: Get test runs for a specific test
+- `get_test_runs_in_context`: Get test runs from a Test Execution,
+  optionally including selected Test issue custom fields
+- `get_test_run`: Get an individual run with its execution metadata and steps
 - `get_test_executions`: Get test executions for a test
 - `get_test_plans`: Get test plans associated with a test
 - `create_test_step`: Create a new test step for a test
@@ -1060,18 +1063,19 @@ A per-product header always takes precedence over the global header for that pro
 |           | `jira_get_issue`              | `confluence_get_page`          | `list_repositories`                | `get_test_statuses`               |
 |           | `jira_get_all_projects`       | `confluence_get_page_children` | `get_repository_info`              | `get_test_runs`                   |
 |           | `jira_get_project_issues`     | `confluence_get_comments`      | `list_branches`                    | `get_test_runs_with_environment`  |
-|           | `jira_get_worklog`            | `confluence_get_labels`        | `get_default_branch`               | `get_test_preconditions`          |
-|           | `jira_get_transitions`        | `confluence_search_user`       | `get_file_content`                 | `get_test_sets`                   |
-|           | `jira_search_fields`          |                                | `list_directory`                   | `get_test_executions`             |
-|           | `jira_get_agile_boards`       |                                | `list_pull_requests`               | `get_test_plans`                  |
-|           | `jira_get_board_issues`       |                                | `pull_request_activities`          | `get_test_step_statuses`          |
-|           | `jira_get_sprints_from_board` |                                | `get_pull_request`                 | `get_test_step`                   |
-|           | `jira_get_sprint_issues`      |                                | `get_commit_changes`               | `get_test_steps`                  |
-|           | `jira_get_issue_link_types`   |                                | `get_commits`                      | `get_tests_with_precondition`     |
-|           | `jira_batch_get_changelogs`*  |                                |                                    | `get_tests_with_test_set`         |
-|           | `jira_get_user_profile`       |                                |                                    | `get_tests_with_test_plan`        |
-|           | `jira_download_attachments`   |                                |                                    | `get_test_executions_with_test_plan` |
-|           | `jira_get_project_versions`   |                                |                                    | `get_tests_with_test_execution`   |
+|           | `jira_get_worklog`            | `confluence_get_labels`        | `get_default_branch`               | `get_test_runs_in_context`        |
+|           | `jira_get_transitions`        | `confluence_search_user`       | `get_file_content`                 | `get_test_preconditions`          |
+|           | `jira_search_fields`          |                                | `list_directory`                   | `get_test_sets`                   |
+|           | `jira_get_agile_boards`       |                                | `list_pull_requests`               | `get_test_executions`             |
+|           | `jira_get_board_issues`       |                                | `pull_request_activities`          | `get_test_plans`                  |
+|           | `jira_get_sprints_from_board` |                                | `get_pull_request`                 | `get_test_step_statuses`          |
+|           | `jira_get_sprint_issues`      |                                | `get_commit_changes`               | `get_test_step`                   |
+|           | `jira_get_issue_link_types`   |                                | `get_commits`                      | `get_test_steps`                  |
+|           | `jira_batch_get_changelogs`*  |                                |                                    | `get_tests_with_precondition`     |
+|           | `jira_get_user_profile`       |                                |                                    | `get_tests_with_test_set`         |
+|           | `jira_download_attachments`   |                                |                                    | `get_tests_with_test_plan`        |
+|           | `jira_get_project_versions`   |                                |                                    | `get_test_executions_with_test_plan` |
+|           |                               |                                |                                    | `get_tests_with_test_execution`   |
 |           |                               |                                |                                    | `get_test_run`                    |
 |           | `jira_summarize_attachments`  |                                |                                    | `get_test_run_assignee`           |
 |           | `jira_get_attachment_images`  |                                |                                    | `get_test_run_iteration`          |

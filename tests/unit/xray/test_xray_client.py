@@ -442,3 +442,42 @@ def test_init_empty_custom_headers():
         mock_session.headers.update.assert_not_called()
 
         assert client.config == config
+
+
+def test_get_test_runs_in_context_uses_v2_endpoint():
+    """Contextual test runs should use API v2 without changing other endpoints."""
+    with (
+        patch("mcp_atlassian.xray.client.Xray") as mock_xray,
+        patch("mcp_atlassian.xray.client.configure_ssl_verification"),
+    ):
+        config = XrayConfig(
+            url="https://xray.example.com",
+            auth_type="pat",
+            personal_token="test_token",
+        )
+        client = XrayClient(config=config)
+        expected = [{"id": 12345}]
+        mock_xray.return_value.get.return_value = expected
+
+        result = client.get_test_runs_in_context(
+            test_exec_key="EXEC-001",
+            test_key="TEST-001",
+            include_test_fields="summary,customfield_12345",
+            limit=25,
+            page=2,
+        )
+
+        assert result == expected
+        mock_xray.return_value.resource_url.assert_called_once_with(
+            "testruns", api_version="2.0"
+        )
+        mock_xray.return_value.get.assert_called_once_with(
+            mock_xray.return_value.resource_url.return_value,
+            params={
+                "testExecKey": "EXEC-001",
+                "testKey": "TEST-001",
+                "includeTestFields": "summary,customfield_12345",
+                "limit": 25,
+                "page": 2,
+            },
+        )

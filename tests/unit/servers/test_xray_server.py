@@ -25,6 +25,7 @@ from tests.fixtures.xray_mocks import (
     MOCK_XRAY_TEST_EXECUTIONS_WITH_TEST_PLAN_RESPONSE,
     MOCK_XRAY_TEST_PLANS_RESPONSE,
     MOCK_XRAY_TEST_RUN_RESPONSE,
+    MOCK_XRAY_TEST_RUNS_IN_CONTEXT_RESPONSE,
     MOCK_XRAY_TEST_RUNS_RESPONSE,
     MOCK_XRAY_TEST_SETS_RESPONSE,
     MOCK_XRAY_TEST_STATUSES_RESPONSE,
@@ -82,6 +83,19 @@ def mock_xray_fetcher():
     mock_fetcher.xray.get_test_runs_with_environment.side_effect = (
         mock_get_test_runs_with_environment
     )
+
+    def mock_get_test_runs_in_context(
+        test_exec_key,
+        test_key=None,
+        include_test_fields=None,
+        limit=10,
+        page=1,
+    ):
+        if not test_exec_key:
+            raise ValueError("Test Execution key is required")
+        return MOCK_XRAY_TEST_RUNS_IN_CONTEXT_RESPONSE
+
+    mock_fetcher.get_test_runs_in_context.side_effect = mock_get_test_runs_in_context
 
     # Configure get_test_preconditions
     def mock_get_test_preconditions(test_key):
@@ -560,6 +574,36 @@ async def test_get_test_runs_with_environment(xray_client, mock_xray_fetcher):
     assert len(content) == 2
     mock_xray_fetcher.xray.get_test_runs_with_environment.assert_called_once_with(
         "TEST-001", "Android,iOS"
+    )
+
+
+@pytest.mark.anyio
+async def test_get_test_runs_in_context(xray_client, mock_xray_fetcher):
+    """Test detailed test-run retrieval from a Test Execution context."""
+    response = await xray_client.call_tool(
+        "xray_get_test_runs_in_context",
+        {
+            "test_exec_key": "EXEC-001",
+            "test_key": "TEST-001",
+            "include_test_fields": "summary,customfield_12345",
+            "limit": 10,
+            "page": 1,
+        },
+    )
+
+    content = json.loads(response.content[0].text)
+    test_run = content[0]
+    assert test_run["id"] == 12345
+    assert test_run["status"] == "PASS"
+    assert test_run["steps"][0]["actualResult"]
+    assert "evidences" in test_run["steps"][0]
+    assert test_run["testIssueFields"]["customfield_12345"] == "Automated"
+    mock_xray_fetcher.get_test_runs_in_context.assert_called_once_with(
+        test_exec_key="EXEC-001",
+        test_key="TEST-001",
+        include_test_fields="summary,customfield_12345",
+        limit=10,
+        page=1,
     )
 
 
