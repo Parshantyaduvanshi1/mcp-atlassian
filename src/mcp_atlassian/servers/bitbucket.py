@@ -163,6 +163,75 @@ async def get_repository_info(
         return json.dumps(error_result, indent=2)
 
 
+@bitbucket_mcp.tool(tags={"bitbucket", "write"})
+@check_write_access
+async def create_repository(
+    ctx: Context,
+    workspace: Annotated[
+        str,
+        Field(description="Workspace name (Cloud) or project key (Server/DC)"),
+    ],
+    repo_slug: Annotated[
+        str,
+        Field(description="Repository name/slug to create"),
+    ],
+    is_private: Annotated[
+        bool,
+        Field(description="Whether the repository should be private"),
+    ] = True,
+    forkable: Annotated[
+        bool,
+        Field(description="Whether the repository can be forked"),
+    ] = False,
+) -> str:
+    """
+    Create a new repository in a workspace/project.
+
+    Args:
+        ctx: The MCP context.
+        workspace: Workspace name (Cloud) or project key (Server/DC).
+        repo_slug: Repository name/slug to create.
+        is_private: Whether the repository should be private (default: True).
+        forkable: Whether the repository can be forked (default: False).
+
+    Returns:
+        JSON string containing the created repository details.
+
+    Raises:
+        ValueError: If the Bitbucket client is not configured or available.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        repo = bitbucket.create_repository(
+            workspace, repo_slug, is_private=is_private, forkable=forkable
+        )
+        return json.dumps(
+            {
+                "success": True,
+                "repository": repo.model_dump(mode="json", serialize_as_any=True),
+            },
+            indent=2,
+        )
+    except Exception as e:
+        log_level = logging.ERROR
+        if isinstance(e, MCPAtlassianAuthenticationError):
+            error_message = f"Authentication/Permission Error: {str(e)}"
+        elif isinstance(e, OSError | HTTPError):
+            error_message = f"Network or API Error: {str(e)}"
+        elif isinstance(e, ValueError):
+            error_message = f"Configuration Error: {str(e)}"
+        else:
+            error_message = f"An unexpected error occurred while creating repository {repo_slug} in {workspace}."
+            logger.exception("Unexpected error in bitbucket_create_repository:")
+
+        error_result = {
+            "success": False,
+            "error": error_message,
+        }
+        logger.log(log_level, f"bitbucket_create_repository failed: {error_message}")
+        return json.dumps(error_result, indent=2)
+
+
 @bitbucket_mcp.tool(tags={"bitbucket", "read"})
 async def list_branches(
     ctx: Context,
@@ -1455,4 +1524,160 @@ async def get_pull_request_diff(
         logger.log(
             log_level, f"bitbucket_get_pull_request_diff failed: {error_message}"
         )
+        return json.dumps(error_result, indent=2)
+
+
+@bitbucket_mcp.tool(tags={"bitbucket", "read"})
+async def get_pull_request_commits(
+    ctx: Context,
+    workspace: Annotated[
+        str,
+        Field(description="Workspace name (Cloud) or project key (Server/DC)"),
+    ],
+    repository: Annotated[
+        str,
+        Field(description="Repository name"),
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="Pull request ID"),
+    ],
+    limit: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of commits to return. Omit or set to null to return all commits.",
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+) -> str:
+    """
+    Get the list of commits included in a pull request.
+
+    Returns each commit's hash, author, timestamp, and commit message so you
+    can trace what changes were introduced and by whom.
+    If limit is not specified, all commits are returned.
+
+    Args:
+        workspace: Workspace name or project key.
+        repository: Repository name.
+        pull_request_id: Pull request ID.
+        limit: Maximum number of commits to return. If not specified, returns all commits.
+
+    Returns:
+        JSON string containing the list of commits for the pull request.
+
+    Raises:
+        ValueError: If the Bitbucket client is not configured or available.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        commits = bitbucket.get_pull_request_commits(
+            workspace, repository, pull_request_id, limit=limit
+        )
+        return json.dumps(
+            {
+                "pull_request_id": pull_request_id,
+                "workspace": workspace,
+                "repository": repository,
+                "commit_count": len(commits),
+                "commits": commits,
+            },
+            indent=2,
+        )
+    except Exception as e:
+        log_level = logging.ERROR
+        if isinstance(e, MCPAtlassianAuthenticationError):
+            error_message = f"Authentication/Permission Error: {str(e)}"
+        elif isinstance(e, OSError | HTTPError):
+            error_message = f"Network or API Error: {str(e)}"
+        elif isinstance(e, ValueError):
+            error_message = f"Configuration Error: {str(e)}"
+        else:
+            error_message = f"An unexpected error occurred while fetching commits for PR {pull_request_id} in {workspace}/{repository}."
+            logger.exception("Unexpected error in bitbucket_get_pull_request_commits:")
+        error_result = {"success": False, "error": error_message}
+        logger.log(
+            log_level, f"bitbucket_get_pull_request_commits failed: {error_message}"
+        )
+        return json.dumps(error_result, indent=2)
+
+
+@bitbucket_mcp.tool(tags={"bitbucket", "read"})
+async def get_commit_builds(
+    ctx: Context,
+    workspace: Annotated[
+        str,
+        Field(description="Workspace name (Cloud) or project key (Server/DC)"),
+    ],
+    repository: Annotated[
+        str,
+        Field(description="Repository name"),
+    ],
+    commit_id: Annotated[
+        str,
+        Field(
+            description="Full commit hash (e.g., 'b602bc8ce4201b91808bd9e12ba6f9ed0ffdd64c')"
+        ),
+    ],
+    limit: Annotated[
+        int | None,
+        Field(
+            description="Maximum number of builds to return. Omit or set to null to return all builds.",
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+) -> str:
+    """
+    Get all CI/CD build statuses for a specific commit.
+
+    Returns the full list of pipeline/build results associated with the commit,
+    including the build state (SUCCESSFUL, FAILED, INPROGRESS), build key, name,
+    description, and the URL to the build in the CI system (e.g. Jenkins, Bamboo).
+
+    Use this to check whether all required pipelines passed before merging a PR
+    or to identify which specific build failed.
+    If limit is not specified, all builds are returned.
+
+    Args:
+        workspace: Workspace name or project key.
+        repository: Repository name.
+        commit_id: Full commit hash to look up builds for.
+        limit: Maximum number of builds to return. If not specified, returns all builds.
+
+    Returns:
+        JSON string containing the list of builds with their status and details.
+
+    Raises:
+        ValueError: If the Bitbucket client is not configured or available.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        builds = bitbucket.get_commit_builds(
+            workspace, repository, commit_id, limit=limit
+        )
+        return json.dumps(
+            {
+                "commit_id": commit_id,
+                "workspace": workspace,
+                "repository": repository,
+                "build_count": len(builds),
+                "builds": builds,
+            },
+            indent=2,
+        )
+    except Exception as e:
+        log_level = logging.ERROR
+        if isinstance(e, MCPAtlassianAuthenticationError):
+            error_message = f"Authentication/Permission Error: {str(e)}"
+        elif isinstance(e, OSError | HTTPError):
+            error_message = f"Network or API Error: {str(e)}"
+        elif isinstance(e, ValueError):
+            error_message = f"Configuration Error: {str(e)}"
+        else:
+            error_message = f"An unexpected error occurred while fetching builds for commit {commit_id} in {workspace}/{repository}."
+            logger.exception("Unexpected error in bitbucket_get_commit_builds:")
+        error_result = {"success": False, "error": error_message}
+        logger.log(log_level, f"bitbucket_get_commit_builds failed: {error_message}")
         return json.dumps(error_result, indent=2)
