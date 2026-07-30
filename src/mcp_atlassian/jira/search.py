@@ -86,26 +86,78 @@ class SearchMixin(JiraClient, IssueOperationsProto):
             else:
                 fields_param = fields
 
-            # Use POST for all JQL searches to avoid URL length limits with large
-            # queries (e.g. 150-180 AND/OR clauses). The Jira REST API accepts
-            # POST on /rest/api/2/search with the JQL and options in the body,
-            # which has no practical length limit unlike GET query parameters.
+            if self.config.is_cloud:
+                # Jira Cloud: the legacy POST /rest/api/2/search endpoint has
+                # been removed by Atlassian. Use the enhanced JQL API (which
+                # itself POSTs to /rest/api/3/search/jql and therefore also
+                # avoids URL-length limits for large queries).
+                actual_total = -1
+                try:
+                    # Call 1: Get metadata (including total) using the search API
+                    metadata_params = {"jql": jql, "maxResults": 0}
+                    metadata_response = self.jira.get(
+                        self.jira.resource_url("search"), params=metadata_params
+                    )
+
+                    if (
+                        isinstance(metadata_response, dict)
+                        and "total" in metadata_response
+                    ):
+                        try:
+                            actual_total = int(metadata_response["total"])
+                        except (ValueError, TypeError):
+                            logger.warning(
+                                f"Could not parse 'total' from metadata response "
+                                f"for JQL: {jql}. Received: "
+                                f"{metadata_response.get('total')}"
+                            )
+                    else:
+                        logger.warning(
+                            f"Could not retrieve total count from metadata "
+                            f"response for JQL: {jql}. Response type: "
+                            f"{type(metadata_response)}"
+                        )
+                except Exception as meta_err:
+                    logger.error(
+                        f"Error fetching metadata for JQL '{jql}': {str(meta_err)}"
+                    )
+
+                # Call 2: Get the actual issues using the enhanced method
+                issues_response_list = self.jira.enhanced_jql_get_list_of_tickets(
+                    jql, fields=fields_param, limit=limit, expand=expand
+                )
+
+                if not isinstance(issues_response_list, list):
+                    msg = (
+                        "Unexpected return value type from "
+                        "`jira.enhanced_jql_get_list_of_tickets`: "
+                        f"{type(issues_response_list)}"
+                    )
+                    logger.error(msg)
+                    raise TypeError(msg)
+
+                response_dict_for_model = {
+                    "issues": issues_response_list,
+                    "total": actual_total,
+                }
+
+                search_result = JiraSearchResult.from_api_response(
+                    response_dict_for_model,
+                    base_url=self.config.url,
+                    requested_fields=fields_param,
+                )
+                return search_result
+
+            # Jira Server/DC: use POST on /rest/api/2/search to avoid URL length
+            # limits with large queries (e.g. 150-180 AND/OR clauses). The body
+            # has no practical length limit unlike GET query parameters.
             response = self._jql_search_post(
                 jql=jql,
                 fields_param=fields_param,
                 start=start,
                 limit=limit,
                 expand=expand,
-                is_cloud=self.config.is_cloud,
             )
-
-            if not isinstance(response, dict):
-                msg = (
-                    "Unexpected return value type from JQL POST search:"
-                    f" {type(response)}"
-                )
-                logger.error(msg)
-                raise TypeError(msg)
 
             search_result = JiraSearchResult.from_api_response(
                 response,
@@ -140,15 +192,14 @@ class SearchMixin(JiraClient, IssueOperationsProto):
         start: int,
         limit: int,
         expand: str | None,
-        *,
-        is_cloud: bool,
     ) -> dict[str, Any]:
         """Execute a JQL search using HTTP POST to avoid URL length limits.
 
-        The Jira REST API accepts POST on /rest/api/2/search with all search
-        parameters in the JSON body. This sidesteps the URL query-string length
-        limits that cause GET requests with large JQL strings (≥ ~150 AND/OR
-        clauses) to fail silently or with HTTP 414/400 errors.
+        Used for Jira Server/DC, where ``POST /rest/api/2/search`` remains
+        supported. It accepts all search parameters in the JSON body, which
+        sidesteps the URL query-string length limits that cause GET requests
+        with large JQL strings (≥ ~150 AND/OR clauses) to fail with HTTP
+        414/400 errors.
 
         Args:
             jql: JQL query string (may be arbitrarily long).
@@ -156,13 +207,12 @@ class SearchMixin(JiraClient, IssueOperationsProto):
             start: Zero-based starting offset for pagination.
             limit: Maximum number of issues to return.
             expand: Optional comma-separated list of items to expand.
-            is_cloud: Whether the target is Jira Cloud (caps maxResults at 100).
 
         Returns:
             Raw dict response from /rest/api/2/search containing ``issues``,
             ``total``, ``startAt``, and ``maxResults``.
         """
-        max_results = min(limit, 100) if is_cloud else min(limit, 50)
+        max_results = min(limit, 50)
 
         body: dict[str, Any] = {
             "jql": jql,
