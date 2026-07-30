@@ -184,8 +184,10 @@ class PullRequestsMixin(BitbucketClient):
         """
         try:
             if self.config.is_cloud:
-                # Cloud: use the standard build-status REST API
-                endpoint = f"projects/{workspace}/repos/{repository}/commits/{commit_id}/builds"
+                # Cloud: use the standard build-status (commit statuses) REST API
+                endpoint = (
+                    f"repositories/{workspace}/{repository}/commit/{commit_id}/statuses"
+                )
                 params: dict[str, Any] = {} if limit is None else {"limit": limit}
                 response = self.bitbucket.get(endpoint, params=params)
                 if isinstance(response, dict):
