@@ -772,6 +772,95 @@ async def test_construct_download_endpoint_tool():
     )
 
 
+@pytest.mark.anyio
+async def test_construct_download_endpoint_fetches_on_cache_miss():
+    """On a cache miss the tool fetches the attachment on demand, then retries.
+
+    Regression test for the stateless download-URL flow: when the attachment was
+    cached on a different instance (or not yet fetched), the tool must populate
+    the cache via the Jira fetcher instead of failing with 'not cached'.
+    """
+    from mcp_atlassian.servers.jira import construct_download_endpoint
+
+    class IsoDate:
+        def isoformat(self) -> str:
+            return "2026-04-10T00:00:00+00:00"
+
+    cache = MagicMock()
+    # First call: cache miss -> ValueError; second call (after fetch): success.
+    cache.create_download_token.side_effect = [
+        ValueError("Attachment 'report.pdf' for issue 'PROJ-1' is not cached."),
+        {
+            "token": "download-token",
+            "expires_at": IsoDate(),
+            "issue_key": "PROJ-1",
+            "filename": "report.pdf",
+            "mime_type": "application/pdf",
+        },
+    ]
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch_and_cache_attachment.return_value = True
+
+    with (
+        patch("mcp_atlassian.servers.jira.get_attachment_cache", return_value=cache),
+        patch(
+            "mcp_atlassian.servers.jira.get_jira_fetcher",
+            AsyncMock(return_value=mock_fetcher),
+        ),
+        patch(
+            "mcp_atlassian.servers.jira._get_external_base_url",
+            return_value="http://localhost:8932",
+        ),
+    ):
+        response = await construct_download_endpoint.fn(
+            MagicMock(),
+            issue_key="PROJ-1",
+            filename="report.pdf",
+            ttl_minutes=5,
+        )
+
+    payload = json.loads(response)
+    assert payload["download_url"] == "http://localhost:8932/download/download-token"
+    mock_fetcher.fetch_and_cache_attachment.assert_called_once_with(
+        "PROJ-1", "report.pdf"
+    )
+    assert cache.create_download_token.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_construct_download_endpoint_raises_when_attachment_missing():
+    """If on-demand fetch cannot find the attachment, the original error propagates."""
+    from mcp_atlassian.servers.jira import construct_download_endpoint
+
+    cache = MagicMock()
+    cache.create_download_token.side_effect = ValueError(
+        "Attachment 'missing.pdf' for issue 'PROJ-1' is not cached."
+    )
+
+    mock_fetcher = MagicMock()
+    mock_fetcher.fetch_and_cache_attachment.return_value = False
+
+    with (
+        patch("mcp_atlassian.servers.jira.get_attachment_cache", return_value=cache),
+        patch(
+            "mcp_atlassian.servers.jira.get_jira_fetcher",
+            AsyncMock(return_value=mock_fetcher),
+        ),
+    ):
+        with pytest.raises(ValueError, match="not cached"):
+            await construct_download_endpoint.fn(
+                MagicMock(),
+                issue_key="PROJ-1",
+                filename="missing.pdf",
+                ttl_minutes=5,
+            )
+
+    mock_fetcher.fetch_and_cache_attachment.assert_called_once_with(
+        "PROJ-1", "missing.pdf"
+    )
+
+
 def test_attachment_cache_clear_deregisters_static_resources(monkeypatch):
     """Test cached attachment cleanup removes static resource registrations."""
     from mcp_atlassian.servers import jira as jira_server
