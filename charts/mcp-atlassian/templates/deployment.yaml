@@ -50,6 +50,18 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            {{- if include "mcp-atlassian.sharedStorageEnabled" . }}
+            - name: STATELESS_HTTP
+              value: "true"
+            - name: UPLOAD_STAGING_BACKEND
+              value: "filesystem"
+            - name: UPLOAD_STAGING_DIR
+              value: {{ printf "%s/upload-staging" .Values.sharedStorage.mountPath | quote }}
+            - name: ATTACHMENT_DOWNLOAD_BACKEND
+              value: "filesystem"
+            - name: ATTACHMENT_DOWNLOAD_DIR
+              value: {{ printf "%s/attachment-downloads" .Values.sharedStorage.mountPath | quote }}
+            {{- end }}
             {{- if and .Values.secrets .Values.secrets.jiraApiToken }}
             - name: JIRA_API_TOKEN
               valueFrom:
@@ -103,13 +115,26 @@ spec:
             {{- toYaml .Values.readinessProbe | nindent 12 }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.volumeMounts }}
+          {{- if or .Values.volumeMounts (include "mcp-atlassian.sharedStorageEnabled" .) }}
           volumeMounts:
+            {{- if include "mcp-atlassian.sharedStorageEnabled" . }}
+            - name: shared-state
+              mountPath: {{ .Values.sharedStorage.mountPath }}
+            {{- end }}
+            {{- with .Values.volumeMounts }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
-      {{- with .Values.volumes }}
+      {{- if or .Values.volumes (include "mcp-atlassian.sharedStorageEnabled" .) }}
       volumes:
+        {{- if include "mcp-atlassian.sharedStorageEnabled" . }}
+        - name: shared-state
+          persistentVolumeClaim:
+            claimName: {{ include "mcp-atlassian.sharedStorageClaimName" . }}
+        {{- end }}
+        {{- with .Values.volumes }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
