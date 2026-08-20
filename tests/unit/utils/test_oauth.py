@@ -8,6 +8,10 @@ from unittest.mock import MagicMock, patch
 import requests
 
 from mcp_atlassian.utils.oauth import (
+    CLOUD_AUTHORIZE_URL,
+    CLOUD_TOKEN_URL,
+    DC_AUTHORIZE_PATH,
+    DC_TOKEN_PATH,
     KEYRING_SERVICE_NAME,
     TOKEN_EXPIRY_MARGIN,
     BYOAccessTokenOAuthConfig,
@@ -835,3 +839,42 @@ def test_configure_oauth_session_byo_config_no_refresh_token_direct_use(mock_log
     mock_logger.info.assert_any_call(
         "configure_oauth_session: Using provided OAuth access token directly (no refresh_token)."
     )
+
+
+class TestDataCenterOAuth:
+    """Tests for Atlassian Data Center OAuth behavior."""
+
+    def test_instance_specific_endpoints_and_authorization_parameters(self):
+        """Data Center uses local endpoints without Cloud-only parameters."""
+        base_url = "https://jira.corp.example.com"
+        config = OAuthConfig(
+            client_id="dc-client",
+            client_secret="dc-secret",
+            redirect_uri="https://client.example.com/callback",
+            scope="WRITE",
+            base_url=f"{base_url}/",
+        )
+
+        assert config.is_data_center is True
+        assert config.token_url == f"{base_url}{DC_TOKEN_PATH}"
+        assert config.authorize_url == f"{base_url}{DC_AUTHORIZE_PATH}"
+
+        authorization_url = config.get_authorization_url(state="csrf-state")
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(authorization_url).query)
+        assert query["state"] == ["csrf-state"]
+        assert "audience" not in query
+        assert "prompt" not in query
+
+    def test_cloud_endpoints_remain_unchanged(self):
+        """Adding Data Center support does not change Cloud endpoint routing."""
+        config = OAuthConfig(
+            client_id="cloud-client",
+            client_secret="cloud-secret",
+            redirect_uri="https://client.example.com/callback",
+            scope="read:jira-work offline_access",
+            cloud_id="cloud-id",
+        )
+
+        assert config.is_data_center is False
+        assert config.token_url == CLOUD_TOKEN_URL
+        assert config.authorize_url == CLOUD_AUTHORIZE_URL

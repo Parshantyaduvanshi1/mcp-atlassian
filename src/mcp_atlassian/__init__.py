@@ -49,6 +49,15 @@ logger = setup_logging(logging_level, logging_stream)
     help="Run OAuth 2.0 setup wizard for Atlassian Cloud",
 )
 @click.option(
+    "--auth-mode",
+    type=click.Choice(["header", "oauth"]),
+    default=None,
+    help=(
+        "Authentication mode: 'header' keeps token-based request headers "
+        "(default); 'oauth' enables browser-based OAuth for HTTP transports"
+    ),
+)
+@click.option(
     "--transport",
     type=click.Choice(["stdio", "sse", "streamable-http"]),
     default="stdio",
@@ -133,19 +142,19 @@ logger = setup_logging(logging_level, logging_stream)
 )
 @click.option(
     "--oauth-client-id",
-    help="OAuth 2.0 client ID for Atlassian Cloud",
+    help="OAuth 2.0 client ID for Atlassian Cloud or Data Center",
 )
 @click.option(
     "--oauth-client-secret",
-    help="OAuth 2.0 client secret for Atlassian Cloud",
+    help="OAuth 2.0 client secret for Atlassian Cloud or Data Center",
 )
 @click.option(
     "--oauth-redirect-uri",
-    help="OAuth 2.0 redirect URI for Atlassian Cloud",
+    help="OAuth 2.0 redirect URI for Atlassian Cloud or Data Center",
 )
 @click.option(
     "--oauth-scope",
-    help="OAuth 2.0 scopes (space-separated) for Atlassian Cloud",
+    help="OAuth 2.0 scopes (space-separated) for Cloud or Data Center",
 )
 @click.option(
     "--oauth-cloud-id",
@@ -153,13 +162,13 @@ logger = setup_logging(logging_level, logging_stream)
 )
 @click.option(
     "--oauth-access-token",
-    help="Atlassian Cloud OAuth 2.0 access token (if you have your own you'd like to "
-    "use for the session.)",
+    help="Atlassian OAuth 2.0 access token to use for the session",
 )
 def main(
     verbose: int,
     env_file: str | None,
     oauth_setup: bool,
+    auth_mode: str | None,
     transport: str,
     port: int,
     host: str,
@@ -194,7 +203,7 @@ def main(
     Authentication methods supported:
     - Username and API token (Cloud)
     - Personal Access Token (Server/Data Center)
-    - OAuth 2.0 (Cloud only)
+    - OAuth 2.0 (Cloud and Data Center)
     """
     # Logging level logic
     if verbose == 1:
@@ -249,6 +258,26 @@ def main(
 
     click_ctx = click.get_current_context(silent=True)
 
+    configured_auth_mode = os.getenv("MCP_AUTH_MODE")
+    if not configured_auth_mode and is_env_truthy(
+        "ATLASSIAN_OAUTH_PROXY_ENABLE", "false"
+    ):
+        configured_auth_mode = "oauth"
+    final_auth_mode = (configured_auth_mode or "header").lower()
+    if click_ctx and was_option_provided(click_ctx, "auth_mode") and auth_mode:
+        final_auth_mode = auth_mode
+    if final_auth_mode not in {"header", "oauth"}:
+        logger.warning(
+            "Invalid MCP_AUTH_MODE '%s'; using header authentication.",
+            final_auth_mode,
+        )
+        final_auth_mode = "header"
+    os.environ["MCP_AUTH_MODE"] = final_auth_mode
+    os.environ["ATLASSIAN_OAUTH_PROXY_ENABLE"] = str(
+        final_auth_mode == "oauth"
+    ).lower()
+    logger.info("Authentication mode: %s", final_auth_mode)
+
     # Transport precedence
     final_transport = os.getenv("TRANSPORT", "stdio").lower()
     if click_ctx and was_option_provided(click_ctx, "transport"):
@@ -259,6 +288,11 @@ def main(
         )
         final_transport = "stdio"
     logger.debug(f"Final transport determined: {final_transport}")
+
+    if final_auth_mode == "oauth" and final_transport == "stdio":
+        raise click.UsageError(
+            "--auth-mode oauth requires --transport sse or streamable-http"
+        )
 
     # Port precedence
     final_port = 8000

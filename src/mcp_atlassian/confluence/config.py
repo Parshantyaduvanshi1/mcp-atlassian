@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from ..utils.env import get_custom_headers, is_env_ssl_verify
+from ..utils.env import get_custom_headers, is_env_ssl_verify, is_env_truthy
 from ..utils.oauth import (
     BYOAccessTokenOAuthConfig,
     OAuthConfig,
@@ -20,7 +20,7 @@ class ConfluenceConfig:
 
     Handles authentication for Confluence Cloud and Server/Data Center:
     - Cloud: username/API token (basic auth) or OAuth 2.0 (3LO)
-    - Server/DC: personal access token or basic auth
+    - Server/DC: personal access token, basic auth, or OAuth 2.0
     """
 
     url: str  # Base URL for Confluence
@@ -87,7 +87,9 @@ class ConfluenceConfig:
         personal_token = os.getenv("CONFLUENCE_PERSONAL_TOKEN")
 
         # Check for OAuth configuration
-        oauth_config = get_oauth_config_from_env()
+        oauth_config = get_oauth_config_from_env(
+            service_url=url, service_type="confluence"
+        )
         auth_type = None
 
         # Use the shared utility function directly
@@ -160,8 +162,23 @@ class ConfluenceConfig:
                         and self.oauth_config.client_secret
                         and self.oauth_config.redirect_uri
                         and self.oauth_config.scope
-                        and self.oauth_config.cloud_id
+                        and (
+                            self.oauth_config.cloud_id
+                            or self.oauth_config.base_url
+                        )
                     ):
+                        return True
+                    if (
+                        is_env_truthy("ATLASSIAN_OAUTH_PROXY_ENABLE", "false")
+                        and self.oauth_config.client_id
+                        and self.oauth_config.client_secret
+                        and self.oauth_config.redirect_uri
+                        and self.oauth_config.scope
+                    ):
+                        logger.debug(
+                            "OAuth proxy configuration detected; Cloud ID will "
+                            "be resolved from the authenticated request"
+                        )
                         return True
                     # Minimal OAuth configuration (user-provided tokens mode)
                     # This is valid if we have oauth_config but missing client credentials
@@ -176,7 +193,9 @@ class ConfluenceConfig:
                         return True
                 # Bring Your Own Access Token mode
                 elif isinstance(self.oauth_config, BYOAccessTokenOAuthConfig):
-                    if self.oauth_config.cloud_id and self.oauth_config.access_token:
+                    if (
+                        self.oauth_config.cloud_id or self.oauth_config.base_url
+                    ) and self.oauth_config.access_token:
                         return True
 
             # Partial configuration is invalid

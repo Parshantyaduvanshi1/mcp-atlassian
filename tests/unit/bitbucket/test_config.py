@@ -127,6 +127,59 @@ class TestBitbucketConfig:
         assert config.oauth_config is not None
         assert config.oauth_config.client_id == "client_id"
 
+    @patch(
+        "mcp_atlassian.utils.oauth.OAuthConfig.load_tokens",
+        return_value=None,
+    )
+    @patch.dict(
+        os.environ,
+        {
+            "BITBUCKET_URL": "https://bitbucket.company.com",
+            "BITBUCKET_OAUTH_CLIENT_ID": "client_id",
+            "BITBUCKET_OAUTH_CLIENT_SECRET": "client_secret",
+            "BITBUCKET_OAUTH_REDIRECT_URI": "http://localhost:8000/callback",
+            "BITBUCKET_OAUTH_SCOPE": "PROJECT_ADMIN",
+        },
+        clear=True,
+    )
+    def test_from_env_oauth_data_center(self, mock_load_tokens):
+        """Test Data Center OAuth uses the Bitbucket instance URL."""
+        config = BitbucketConfig.from_env()
+
+        assert config.auth_type == "oauth"
+        assert config.oauth_config is not None
+        assert config.oauth_config.is_data_center is True
+        assert config.oauth_config.base_url == "https://bitbucket.company.com"
+        assert config.oauth_config.cloud_id is None
+        mock_load_tokens.assert_called_once_with(
+            "client_id",
+            cloud_id=None,
+            base_url="https://bitbucket.company.com",
+        )
+
+    @patch(
+        "mcp_atlassian.utils.oauth.OAuthConfig.load_tokens",
+        return_value=None,
+    )
+    @patch.dict(
+        os.environ,
+        {
+            "BITBUCKET_URL": "https://bitbucket.company.com",
+            "BITBUCKET_OAUTH_CLIENT_ID": "client_id",
+            "BITBUCKET_OAUTH_CLIENT_SECRET": "client_secret",
+        },
+        clear=True,
+    )
+    def test_from_env_oauth_data_center_uses_bitbucket_scope(
+        self, mock_load_tokens
+    ):
+        """Test Data Center OAuth defaults to Bitbucket's read scope."""
+        config = BitbucketConfig.from_env()
+
+        assert config.oauth_config is not None
+        assert config.oauth_config.scope == "REPO_READ"
+        mock_load_tokens.assert_called_once()
+
     @patch.dict(os.environ, {}, clear=True)
     def test_from_env_missing_url_raises_error(self):
         """Test that missing URL raises ValueError."""

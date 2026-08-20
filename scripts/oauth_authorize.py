@@ -2,7 +2,7 @@
 """
 OAuth 2.0 Authorization Flow Helper for MCP Atlassian
 
-This script helps with the OAuth 2.0 (3LO) authorization flow for Atlassian Cloud:
+This script helps with OAuth 2.0 authorization for Atlassian Cloud and Data Center:
 1. Opens a browser to the authorization URL
 2. Starts a local server to receive the callback with the authorization code
 3. Exchanges the authorization code for access and refresh tokens
@@ -13,6 +13,8 @@ Usage:
                              --redirect-uri http://localhost:8080/callback
                              --scope "read:jira-work write:jira-work read:confluence-space.summary offline_access"
 
+For Data Center, also pass --instance-url and use a product scope such as WRITE.
+
 IMPORTANT: The 'offline_access' scope is required for refresh tokens to work properly.
 Without this scope, tokens will expire quickly and authentication will fail.
 
@@ -21,6 +23,7 @@ Environment variables can also be used:
 - ATLASSIAN_OAUTH_CLIENT_SECRET
 - ATLASSIAN_OAUTH_REDIRECT_URI
 - ATLASSIAN_OAUTH_SCOPE
+- ATLASSIAN_OAUTH_INSTANCE_URL (Data Center setup only)
 """
 
 import argparse
@@ -39,6 +42,7 @@ import webbrowser
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.mcp_atlassian.utils.oauth import OAuthConfig
+from src.mcp_atlassian.utils.urls import is_atlassian_cloud_url
 
 # Configure logging (basicConfig should be called only once, ideally at the very start)
 # Adding lineno for better debugging.
@@ -213,6 +217,7 @@ def run_oauth_flow(args: argparse.Namespace) -> bool:
         client_secret=args.client_secret,
         redirect_uri=args.redirect_uri,
         scope=args.scope,
+        base_url=args.instance_url,
     )
 
     # Generate a random state for CSRF protection
@@ -266,12 +271,26 @@ def run_oauth_flow(args: argparse.Namespace) -> bool:
         return False
 
     if oauth_config.exchange_code_for_tokens(authorization_code):
-        logger.info("🎉 OAuth authorization flow completed successfully!")
+        logger.info("OAuth authorization flow completed successfully.")
 
-        if oauth_config.cloud_id:
+        if oauth_config.is_data_center and oauth_config.base_url:
+            logger.info("Data Center instance: %s", oauth_config.base_url)
+            logger.info(
+                "Set JIRA_URL or CONFLUENCE_URL to this instance URL at runtime."
+            )
+            logger.info(
+                "Use service-specific JIRA_OAUTH_* or CONFLUENCE_OAUTH_* variables "
+                "when the products use separate incoming links."
+            )
+            if not oauth_config.refresh_token:
+                logger.warning(
+                    "No refresh token was issued; reauthorize when the access token "
+                    "expires."
+                )
+        elif oauth_config.cloud_id:
             logger.info(f"Retrieved Cloud ID: {oauth_config.cloud_id}")
             logger.info(
-                "\n💡 Tip: Add/update the following in your .env file or environment variables:"
+                "\nAdd/update the following in your .env file or environment variables:"
             )
             logger.info(f"ATLASSIAN_OAUTH_CLIENT_ID={oauth_config.client_id}")
             logger.info(f"ATLASSIAN_OAUTH_CLIENT_SECRET={oauth_config.client_secret}")
@@ -305,6 +324,10 @@ def main() -> int:
         help="OAuth Redirect URI (e.g., http://localhost:8080/callback)",
     )
     parser.add_argument("--scope", help="OAuth Scope (space-separated)")
+    parser.add_argument(
+        "--instance-url",
+        help="Atlassian Data Center base URL; omit for Atlassian Cloud",
+    )
 
     args = parser.parse_args()
 
@@ -317,6 +340,19 @@ def main() -> int:
         args.redirect_uri = os.getenv("ATLASSIAN_OAUTH_REDIRECT_URI")
     if not args.scope:
         args.scope = os.getenv("ATLASSIAN_OAUTH_SCOPE")
+    if not args.instance_url:
+        args.instance_url = os.getenv("ATLASSIAN_OAUTH_INSTANCE_URL")
+
+    if args.instance_url:
+        args.instance_url = args.instance_url.rstrip("/")
+    is_data_center = bool(args.instance_url) and not is_atlassian_cloud_url(
+        args.instance_url
+    )
+    if is_data_center:
+        args.redirect_uri = args.redirect_uri or "http://localhost:8080/callback"
+        args.scope = args.scope or "WRITE"
+    else:
+        args.instance_url = None
 
     # Validate required arguments
     missing = []
@@ -334,9 +370,9 @@ def main() -> int:
         parser.print_help()
         return 1
 
-    # Check for offline_access scope
-    if args.scope and "offline_access" not in args.scope.split():
-        logger.warning("\n⚠️ WARNING: The 'offline_access' scope is missing!")
+    # Cloud requires offline_access for refresh tokens; Data Center does not.
+    if not is_data_center and args.scope and "offline_access" not in args.scope.split():
+        logger.warning("\nWARNING: The 'offline_access' scope is missing!")
         logger.warning(
             "Without this scope, refresh tokens will not be issued and authentication will fail when tokens expire."
         )

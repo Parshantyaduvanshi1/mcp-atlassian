@@ -19,7 +19,7 @@ class BitbucketConfig:
 
     Handles authentication for Bitbucket Cloud and Server/Data Center:
     - Cloud: username/app password (basic auth) or OAuth 2.0 (3LO)
-    - Server/DC: personal access token or basic auth
+    - Server/DC: personal access token, basic auth, or OAuth 2.0
     """
 
     url: str  # Base URL for Bitbucket
@@ -101,7 +101,9 @@ class BitbucketConfig:
         personal_token = os.getenv("BITBUCKET_PERSONAL_TOKEN")
 
         # Check for OAuth configuration
-        oauth_config = get_oauth_config_from_env()
+        oauth_config = get_oauth_config_from_env(
+            service_url=url, service_type="bitbucket"
+        )
 
         # Check if this is a cloud instance
         is_cloud = is_atlassian_cloud_url(url)
@@ -127,7 +129,7 @@ class BitbucketConfig:
                 error_msg = (
                     "For Bitbucket Server/Data Center, provide either "
                     "BITBUCKET_PERSONAL_TOKEN for PAT auth, or BITBUCKET_USERNAME "
-                    "and BITBUCKET_APP_PASSWORD for basic auth"
+                    "and BITBUCKET_APP_PASSWORD for basic auth, or configure OAuth"
                 )
                 raise ValueError(error_msg)
 
