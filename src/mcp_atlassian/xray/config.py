@@ -15,7 +15,7 @@ class XrayConfig:
 
     Handles authentication for Xray Cloud and Server/Data Center:
     - Cloud: username/API token (basic auth) or OAuth 2.0 (3LO)
-    - Server/DC: personal access token, basic auth, or Jira OAuth 2.0
+    - Server/DC: personal access token, basic auth, or Jira browser OAuth
     """
 
     url: str  # Base URL for Xray
@@ -149,9 +149,7 @@ class XrayConfig:
                         return True
                 # Bring Your Own Access Token mode
                 elif isinstance(self.oauth_config, BYOAccessTokenOAuthConfig):
-                    if (
-                        self.oauth_config.cloud_id or self.oauth_config.base_url
-                    ) and self.oauth_config.access_token:
+                    if self.oauth_config.cloud_id and self.oauth_config.access_token:
                         return True
 
             # Partial configuration is invalid

@@ -36,30 +36,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mcp-atlassian.servers.dependencies")
 
 
-def _resolve_oauth_context(
+def _resolve_oauth_token(
     fallback_token: str,
-    fallback_cloud_id: str | None,
     service: str,
-) -> tuple[str, str | None]:
-    """Resolve the upstream Atlassian token and tenant from FastMCP auth."""
+) -> str:
+    """Resolve the upstream Data Center token from FastMCP browser auth."""
     try:
         access_token = get_access_token()
     except (RuntimeError, LookupError):
-        return fallback_token, fallback_cloud_id
+        return fallback_token
 
     if not access_token or not access_token.token:
-        return fallback_token, fallback_cloud_id
-
-    cloud_id = fallback_cloud_id
-    if access_token.claims:
-        claim_cloud_id = access_token.claims.get("cloud_id")
-        if isinstance(claim_cloud_id, str) and claim_cloud_id:
-            cloud_id = claim_cloud_id
+        return fallback_token
     if access_token.token != fallback_token:
         logger.debug(
             "Resolved upstream %s token from FastMCP OAuth context", service
         )
-    return access_token.token, cloud_id
+    return access_token.token
 
 
 def _create_user_config_for_fetcher(
@@ -123,8 +116,8 @@ def _create_user_config_for_fetcher(
 
         # Use provided cloud_id or fall back to global config cloud_id
         effective_cloud_id = cloud_id if cloud_id else global_oauth_cfg.cloud_id
-        effective_base_url = global_oauth_cfg.base_url if hasattr(global_oauth_cfg, 'base_url') else None
-        
+        effective_base_url = getattr(global_oauth_cfg, "base_url", None)
+
         # OAuth requires either cloud_id (Cloud) or base_url (Data Center)
         if not effective_cloud_id and not effective_base_url:
             raise ValueError(
@@ -298,9 +291,7 @@ async def get_jira_fetcher(ctx: Context) -> JiraFetcher:
                 raise ValueError("User Atlassian token found in state but is empty.")
             credentials = {"user_email_context": user_email}
             if user_auth_type == "oauth":
-                user_token, user_cloud_id = _resolve_oauth_context(
-                    user_token, user_cloud_id, "Jira"
-                )
+                user_token = _resolve_oauth_token(user_token, "Jira")
                 credentials["oauth_access_token"] = user_token
             elif user_auth_type == "pat":
                 credentials["personal_access_token"] = user_token
@@ -469,9 +460,7 @@ async def get_confluence_fetcher(ctx: Context) -> ConfluenceFetcher:
                 raise ValueError("User Atlassian token found in state but is empty.")
             credentials = {"user_email_context": user_email}
             if user_auth_type == "oauth":
-                user_token, user_cloud_id = _resolve_oauth_context(
-                    user_token, user_cloud_id, "Confluence"
-                )
+                user_token = _resolve_oauth_token(user_token, "Confluence")
                 credentials["oauth_access_token"] = user_token
             elif user_auth_type == "pat":
                 credentials["personal_access_token"] = user_token
@@ -657,9 +646,7 @@ async def get_bitbucket_fetcher(ctx: Context) -> BitbucketFetcher:
                 raise ValueError("User Atlassian token found in state but is empty.")
             credentials = {"user_email_context": user_email}
             if user_auth_type == "oauth":
-                user_token, user_cloud_id = _resolve_oauth_context(
-                    user_token, user_cloud_id, "Bitbucket"
-                )
+                user_token = _resolve_oauth_token(user_token, "Bitbucket")
                 credentials["oauth_access_token"] = user_token
             elif user_auth_type == "pat":
                 credentials["personal_access_token"] = user_token
@@ -854,9 +841,7 @@ async def get_xray_fetcher(ctx: Context) -> XrayFetcher:
                 raise ValueError("User Atlassian token found in state but is empty.")
             credentials = {"user_email_context": user_email}
             if user_auth_type == "oauth":
-                user_token, user_cloud_id = _resolve_oauth_context(
-                    user_token, user_cloud_id, "Xray"
-                )
+                user_token = _resolve_oauth_token(user_token, "Xray")
                 credentials["oauth_access_token"] = user_token
             else:
                 credentials["personal_access_token"] = user_token

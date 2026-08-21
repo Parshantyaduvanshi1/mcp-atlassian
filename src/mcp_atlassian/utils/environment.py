@@ -8,47 +8,34 @@ from .urls import is_atlassian_cloud_url
 logger = logging.getLogger("mcp-atlassian.utils.environment")
 
 
-def _get_oauth_env(service_type: str, name: str) -> str | None:
-    """Return a service-specific OAuth value, falling back to the shared value."""
-    return os.getenv(f"{service_type.upper()}_OAUTH_{name}") or os.getenv(
-        f"ATLASSIAN_OAUTH_{name}"
-    )
-
-
-def _is_oauth_configured(service_url: str, service_type: str) -> bool:
-    """Check whether runtime OAuth inputs are sufficient for a service."""
-    is_cloud = is_atlassian_cloud_url(service_url)
-    access_token = _get_oauth_env(service_type, "ACCESS_TOKEN")
-    cloud_id = os.getenv("ATLASSIAN_OAUTH_CLOUD_ID")
-
-    if access_token:
-        return bool(cloud_id) if is_cloud else True
-
-    client_id = _get_oauth_env(service_type, "CLIENT_ID")
-    client_secret = _get_oauth_env(service_type, "CLIENT_SECRET")
-    if client_id and client_secret:
-        if not is_cloud:
-            return True
-        if os.getenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "").lower() in (
-            "true",
-            "1",
-            "yes",
-        ):
-            return bool(
-                _get_oauth_env(service_type, "REDIRECT_URI")
-                and _get_oauth_env(service_type, "SCOPE")
-            )
-        return bool(
-            _get_oauth_env(service_type, "REDIRECT_URI")
-            and _get_oauth_env(service_type, "SCOPE")
-            and cloud_id
-        )
-
-    return os.getenv("ATLASSIAN_OAUTH_ENABLE", "").lower() in (
+def _is_browser_oauth_configured(service_url: str, service_type: str) -> bool:
+    """Return whether Data Center browser OAuth is complete for a product."""
+    if is_atlassian_cloud_url(service_url):
+        return False
+    if os.getenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "").lower() not in (
         "true",
         "1",
         "yes",
+    ):
+        return False
+
+    prefix = service_type.upper()
+    return all(
+        os.getenv(f"{prefix}_OAUTH_{name}")
+        for name in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SCOPE")
     )
+
+
+def _is_cloud_oauth_configured() -> bool:
+    """Preserve the existing shared Cloud OAuth configuration checks."""
+    cloud_id = os.getenv("ATLASSIAN_OAUTH_CLOUD_ID")
+    full_oauth = all(
+        os.getenv(f"ATLASSIAN_OAUTH_{name}")
+        for name in ("CLIENT_ID", "CLIENT_SECRET", "REDIRECT_URI", "SCOPE")
+    )
+    return bool((full_oauth and cloud_id) or (
+        os.getenv("ATLASSIAN_OAUTH_ACCESS_TOKEN") and cloud_id
+    ))
 
 
 def get_available_services(
@@ -63,12 +50,12 @@ def get_available_services(
     if confluence_url:
         is_cloud = is_atlassian_cloud_url(confluence_url)
 
-        if _is_oauth_configured(confluence_url, "confluence"):
+        if _is_browser_oauth_configured(confluence_url, "confluence"):
             confluence_is_setup = True
-            logger.info(
-                "Using Confluence OAuth 2.0 authentication (%s)",
-                "Cloud" if is_cloud else "Data Center",
-            )
+            logger.info("Using Confluence Data Center browser OAuth")
+        elif is_cloud and _is_cloud_oauth_configured():
+            confluence_is_setup = True
+            logger.info("Using Confluence OAuth 2.0 authentication (Cloud)")
         elif is_cloud:  # Cloud non-OAuth
             if all(
                 [
@@ -113,12 +100,12 @@ def get_available_services(
     jira_is_setup = False
     if jira_url:
         is_cloud = is_atlassian_cloud_url(jira_url)
-        if _is_oauth_configured(jira_url, "jira"):
+        if _is_browser_oauth_configured(jira_url, "jira"):
             jira_is_setup = True
-            logger.info(
-                "Using Jira OAuth 2.0 authentication (%s)",
-                "Cloud" if is_cloud else "Data Center",
-            )
+            logger.info("Using Jira Data Center browser OAuth")
+        elif is_cloud and _is_cloud_oauth_configured():
+            jira_is_setup = True
+            logger.info("Using Jira OAuth 2.0 authentication (Cloud)")
         elif is_cloud:  # Cloud non-OAuth
             if all(
                 [
@@ -162,12 +149,12 @@ def get_available_services(
     if bitbucket_url:
         is_cloud = "bitbucket.org" in bitbucket_url.lower()
 
-        if _is_oauth_configured(bitbucket_url, "bitbucket"):
+        if _is_browser_oauth_configured(bitbucket_url, "bitbucket"):
             bitbucket_is_setup = True
-            logger.info(
-                "Using Bitbucket OAuth 2.0 authentication (%s)",
-                "Cloud" if is_cloud else "Data Center",
-            )
+            logger.info("Using Bitbucket Data Center browser OAuth")
+        elif is_cloud and _is_cloud_oauth_configured():
+            bitbucket_is_setup = True
+            logger.info("Using Bitbucket OAuth 2.0 authentication (Cloud)")
         elif is_cloud:  # Cloud non-OAuth
             if all(
                 [

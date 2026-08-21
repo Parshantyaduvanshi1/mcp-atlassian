@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from ..utils.env import get_custom_headers, is_env_ssl_verify, is_env_truthy
+from ..utils.env import get_custom_headers, is_env_ssl_verify
 from ..utils.oauth import (
     BYOAccessTokenOAuthConfig,
     OAuthConfig,
@@ -168,18 +168,6 @@ class JiraConfig:
                         )
                     ):
                         return True
-                    if (
-                        is_env_truthy("ATLASSIAN_OAUTH_PROXY_ENABLE", "false")
-                        and self.oauth_config.client_id
-                        and self.oauth_config.client_secret
-                        and self.oauth_config.redirect_uri
-                        and self.oauth_config.scope
-                    ):
-                        logger.debug(
-                            "OAuth proxy configuration detected; Cloud ID will "
-                            "be resolved from the authenticated request"
-                        )
-                        return True
                     # Minimal OAuth configuration (user-provided tokens mode)
                     # This is valid if we have oauth_config but missing client credentials
                     # In this case, we expect authentication to come from user-provided headers
@@ -193,9 +181,7 @@ class JiraConfig:
                         return True
                 # Bring Your Own Access Token mode
                 elif isinstance(self.oauth_config, BYOAccessTokenOAuthConfig):
-                    if (
-                        self.oauth_config.cloud_id or self.oauth_config.base_url
-                    ) and self.oauth_config.access_token:
+                    if self.oauth_config.cloud_id and self.oauth_config.access_token:
                         return True
 
             # Partial configuration is invalid

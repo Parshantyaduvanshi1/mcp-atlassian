@@ -1,7 +1,7 @@
 """
 OAuth 2.0 Authorization Flow Helper for MCP Atlassian
 
-This module helps with OAuth 2.0 authorization for Atlassian Cloud and Data Center:
+This module helps with the OAuth 2.0 (3LO) authorization flow for Atlassian Cloud:
 1. Opens a browser to the authorization URL
 2. Starts a local server to receive the callback with the authorization code
 3. Exchanges the authorization code for access and refresh tokens
@@ -19,7 +19,6 @@ import webbrowser
 from dataclasses import dataclass
 
 from ..utils.oauth import OAuthConfig
-from ..utils.urls import is_atlassian_cloud_url
 
 # Configure logging
 logger = logging.getLogger("mcp-atlassian.oauth-setup")
@@ -191,7 +190,6 @@ class OAuthSetupArgs:
     client_secret: str
     redirect_uri: str
     scope: str
-    base_url: str | None = None
 
 
 def run_oauth_flow(args: OAuthSetupArgs) -> bool:
@@ -209,7 +207,6 @@ def run_oauth_flow(args: OAuthSetupArgs) -> bool:
         client_secret=args.client_secret,
         redirect_uri=args.redirect_uri,
         scope=args.scope,
-        base_url=args.base_url,
     )
 
     # Generate a random state for CSRF protection
@@ -256,37 +253,15 @@ def run_oauth_flow(args: OAuthSetupArgs) -> bool:
     # Exchange the code for tokens
     logger.info("Exchanging authorization code for tokens...")
     if oauth_config.exchange_code_for_tokens(authorization_code):
-        logger.info("OAuth authorization successful.")
-        logger.info("Access token saved securely.")
-        if oauth_config.refresh_token:
-            logger.info("Refresh token saved securely.")
-        else:
-            logger.warning(
-                "No refresh token was issued; reauthorize when the access token "
-                "expires."
-            )
+        logger.info("✅ OAuth authorization successful!")
+        logger.info(
+            f"Access token: {oauth_config.access_token[:10]}...{oauth_config.access_token[-5:]}"
+        )
+        logger.info(
+            f"Refresh token saved: {oauth_config.refresh_token[:5]}...{oauth_config.refresh_token[-3:]}"
+        )
 
-        if oauth_config.is_data_center and oauth_config.base_url:
-            logger.info("Data Center instance: %s", oauth_config.base_url)
-            logger.info("\n=== REQUIRED RUNTIME CONFIGURATION ===")
-            logger.info(
-                "Set JIRA_URL or CONFLUENCE_URL to %s for the service whose "
-                "incoming application link you configured.",
-                oauth_config.base_url,
-            )
-            logger.info(f"ATLASSIAN_OAUTH_CLIENT_ID={oauth_config.client_id}")
-            logger.info(
-                f"ATLASSIAN_OAUTH_CLIENT_SECRET={oauth_config.client_secret}"
-            )
-            logger.info(
-                f"ATLASSIAN_OAUTH_REDIRECT_URI={oauth_config.redirect_uri}"
-            )
-            logger.info(f"ATLASSIAN_OAUTH_SCOPE={oauth_config.scope}")
-            logger.info(
-                "Use JIRA_OAUTH_* or CONFLUENCE_OAUTH_* equivalents when the "
-                "services use separate incoming links."
-            )
-        elif oauth_config.cloud_id:
+        if oauth_config.cloud_id:
             logger.info(f"Cloud ID: {oauth_config.cloud_id}")
 
             # Print environment variable information more clearly
@@ -411,18 +386,9 @@ def run_oauth_setup() -> int:
     print(
         "This wizard will guide you through setting up OAuth 2.0 authentication for MCP Atlassian."
     )
-    print("\nFor Cloud, create an OAuth 2.0 app in the Atlassian Developer Console.")
-    print(
-        "For Data Center, create an incoming application link in the product "
-        "administration UI."
-    )
+    print("\nYou need to have created an OAuth 2.0 app in your Atlassian account.")
+    print("You can create one at: https://developer.atlassian.com/console/myapps/")
     print("\nPlease provide the following information:\n")
-
-    instance_url = _prompt_for_input(
-        "Data Center instance URL (leave blank for Cloud)",
-        "ATLASSIAN_OAUTH_INSTANCE_URL",
-    ).rstrip("/")
-    is_data_center = bool(instance_url) and not is_atlassian_cloud_url(instance_url)
 
     # Check for environment variables first
     client_id = _prompt_for_input("OAuth Client ID", "ATLASSIAN_OAUTH_CLIENT_ID")
@@ -439,11 +405,9 @@ def run_oauth_setup() -> int:
         or default_redirect
     )
 
-    default_scope = os.getenv("ATLASSIAN_OAUTH_SCOPE") or (
-        "WRITE"
-        if is_data_center
-        else "read:jira-work write:jira-work "
-        "read:confluence-space.summary offline_access"
+    default_scope = os.getenv(
+        "ATLASSIAN_OAUTH_SCOPE",
+        "read:jira-work write:jira-work read:confluence-space.summary offline_access",
     )
     scope = (
         _prompt_for_input("OAuth Scopes (space-separated)", "ATLASSIAN_OAUTH_SCOPE")
@@ -464,7 +428,6 @@ def run_oauth_setup() -> int:
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         scope=scope,
-        base_url=instance_url if is_data_center else None,
     )
 
     success = run_oauth_flow(args)

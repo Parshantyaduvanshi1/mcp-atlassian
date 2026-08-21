@@ -54,7 +54,8 @@ logger = setup_logging(logging_level, logging_stream)
     default=None,
     help=(
         "Authentication mode: 'header' keeps token-based request headers "
-        "(default); 'oauth' enables browser-based OAuth for HTTP transports"
+        "(default); 'oauth' enables Data Center browser OAuth over "
+        "streamable HTTP"
     ),
 )
 @click.option(
@@ -142,19 +143,19 @@ logger = setup_logging(logging_level, logging_stream)
 )
 @click.option(
     "--oauth-client-id",
-    help="OAuth 2.0 client ID for Atlassian Cloud or Data Center",
+    help="OAuth 2.0 client ID for Atlassian Cloud",
 )
 @click.option(
     "--oauth-client-secret",
-    help="OAuth 2.0 client secret for Atlassian Cloud or Data Center",
+    help="OAuth 2.0 client secret for Atlassian Cloud",
 )
 @click.option(
     "--oauth-redirect-uri",
-    help="OAuth 2.0 redirect URI for Atlassian Cloud or Data Center",
+    help="OAuth 2.0 redirect URI for Atlassian Cloud",
 )
 @click.option(
     "--oauth-scope",
-    help="OAuth 2.0 scopes (space-separated) for Cloud or Data Center",
+    help="OAuth 2.0 scopes (space-separated) for Atlassian Cloud",
 )
 @click.option(
     "--oauth-cloud-id",
@@ -162,8 +163,10 @@ logger = setup_logging(logging_level, logging_stream)
 )
 @click.option(
     "--oauth-access-token",
-    help="Atlassian OAuth 2.0 access token to use for the session",
+    help="Atlassian Cloud OAuth 2.0 access token (if you have your own you'd like to "
+    "use for the session.)",
 )
+
 def main(
     verbose: int,
     env_file: str | None,
@@ -203,7 +206,8 @@ def main(
     Authentication methods supported:
     - Username and API token (Cloud)
     - Personal Access Token (Server/Data Center)
-    - OAuth 2.0 (Cloud and Data Center)
+    - Existing OAuth setup and BYOT flows (Cloud)
+    - Browser OAuth proxy (Data Center, streamable HTTP only)
     """
     # Logging level logic
     if verbose == 1:
@@ -289,9 +293,9 @@ def main(
         final_transport = "stdio"
     logger.debug(f"Final transport determined: {final_transport}")
 
-    if final_auth_mode == "oauth" and final_transport == "stdio":
+    if final_auth_mode == "oauth" and final_transport != "streamable-http":
         raise click.UsageError(
-            "--auth-mode oauth requires --transport sse or streamable-http"
+            "--auth-mode oauth requires --transport streamable-http"
         )
 
     # Port precedence

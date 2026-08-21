@@ -13,7 +13,7 @@ from pydantic import AnyHttpUrl
 from starlette.applications import Starlette
 
 from mcp_atlassian.servers.oauth_proxy import HardenedOAuthProxy
-from mcp_atlassian.utils.token_verifier import AtlassianOpaqueTokenVerifier
+from mcp_atlassian.utils.token_verifier import AtlassianDataCenterTokenVerifier
 from tests.utils.oauth_dcr_harness import (
     FakeUpstreamIssuer,
     LocalTLSOAuthIssuer,
@@ -41,8 +41,9 @@ def _build_proxy(
         "upstream_token_endpoint": f"{upstream_base_url}/token",
         "upstream_client_id": "upstream-client-id",
         "upstream_client_secret": "upstream-client-secret",
-        "token_verifier": AtlassianOpaqueTokenVerifier(
+        "token_verifier": AtlassianDataCenterTokenVerifier(
             instance_url=upstream_base_url,
+            product="jira",
             required_scopes=["read:jira-work"],
         ),
         "allowed_grant_types": ["authorization_code", "refresh_token"],

@@ -1,10 +1,14 @@
 """Tests for the environment utilities module."""
 
 import logging
+import os
 
 import pytest
 
-from mcp_atlassian.utils.environment import get_available_services
+from mcp_atlassian.utils.environment import (
+    get_available_services,
+    get_data_center_oauth_product,
+)
 from tests.utils.assertions import assert_log_contains
 from tests.utils.mocks import MockEnvironment
 
@@ -85,7 +89,7 @@ def _assert_service_availability(
 def _assert_authentication_logs(caplog, auth_type, services):
     """Helper to assert authentication log messages."""
     log_patterns = {
-        "oauth": "OAuth 2.0 (3LO) authentication (Cloud-only features)",
+        "oauth": "OAuth 2.0 authentication",
         "cloud_basic": "Cloud Basic Authentication (API Token)",
         "server": "Server/Data Center authentication (PAT or Basic Auth)",
         "not_configured": (
@@ -128,6 +132,77 @@ class TestGetAvailableServices:
             _assert_authentication_logs(
                 caplog, "not_configured", ["confluence", "jira", "bitbucket", "xray"]
             )
+
+    @pytest.mark.parametrize(
+        ("public_base_url", "expected"),
+        [
+            ("https://mcp.example.com/jira", "jira"),
+            ("https://mcp.example.com/confluence", "confluence"),
+            ("https://mcp.example.com", None),
+        ],
+    )
+    def test_dc_oauth_product_is_inferred_from_public_url(
+        self, public_base_url, expected
+    ):
+        with MockEnvironment.clean_env():
+            os.environ["PUBLIC_BASE_URL"] = public_base_url
+            os.environ["JIRA_URL"] = "https://jira.example.com"
+            os.environ["CONFLUENCE_URL"] = "https://confluence.example.com"
+
+            assert get_data_center_oauth_product() == expected
+
+    @pytest.mark.parametrize("public_path", ["jira", "confluence"])
+    def test_cloud_oauth_product_is_not_inferred_from_public_url(self, public_path):
+        with MockEnvironment.clean_env():
+            os.environ["PUBLIC_BASE_URL"] = f"https://mcp.example.com/{public_path}"
+            os.environ["JIRA_URL"] = "https://acme.atlassian.net"
+            os.environ["CONFLUENCE_URL"] = "https://acme.atlassian.net/wiki"
+
+            assert get_data_center_oauth_product() is None
+
+    @pytest.mark.parametrize(
+        ("public_path", "expected"),
+        [
+            (
+                "jira",
+                {
+                    "confluence": False,
+                    "jira": True,
+                    "bitbucket": False,
+                    "xray": True,
+                },
+            ),
+            (
+                "confluence",
+                {
+                    "confluence": True,
+                    "jira": False,
+                    "bitbucket": False,
+                    "xray": False,
+                },
+            ),
+        ],
+    )
+    def test_oauth_product_process_hides_other_services(
+        self, public_path, expected
+    ):
+        with MockEnvironment.clean_env():
+            os.environ.update(
+                {
+                    "ATLASSIAN_OAUTH_PROXY_ENABLE": "true",
+                    "PUBLIC_BASE_URL": f"https://mcp.example.com/{public_path}",
+                    "JIRA_URL": "https://jira.example.com",
+                    "JIRA_OAUTH_CLIENT_ID": "jira-client",
+                    "JIRA_OAUTH_CLIENT_SECRET": "jira-secret",
+                    "CONFLUENCE_URL": "https://confluence.example.com",
+                    "CONFLUENCE_OAUTH_CLIENT_ID": "confluence-client",
+                    "CONFLUENCE_OAUTH_CLIENT_SECRET": "confluence-secret",
+                    "BITBUCKET_URL": "https://bitbucket.example.com",
+                    "BITBUCKET_PERSONAL_TOKEN": "bitbucket-token",
+                }
+            )
+
+            assert get_available_services() == expected
 
     def test_xray_requires_enable_header_for_header_auth(self, caplog):
         """Xray should stay disabled for header-based auth without the enable header."""
