@@ -2251,14 +2251,25 @@ async def construct_download_endpoint(
     Returns:
         JSON string with download_url, expires_at, and attachment metadata.
     """
-    del ctx
-
     cache = get_attachment_cache()
-    token_info = cache.create_download_token(
-        issue_key=issue_key,
-        filename=filename,
-        ttl_minutes=ttl_minutes,
-    )
+    try:
+        token_info = cache.create_download_token(
+            issue_key=issue_key,
+            filename=filename,
+            ttl_minutes=ttl_minutes,
+        )
+    except ValueError:
+        # Cache miss — e.g. the attachment was cached on a different stateless
+        # instance, or not fetched yet. Fetch it on demand so the download-URL
+        # flow works regardless of which instance served jira_download_attachments.
+        jira = await get_jira_fetcher(ctx)
+        if not jira.fetch_and_cache_attachment(issue_key, filename):
+            raise
+        token_info = cache.create_download_token(
+            issue_key=issue_key,
+            filename=filename,
+            ttl_minutes=ttl_minutes,
+        )
     base_url = _get_external_base_url()
     download_url = f"{base_url}/download/{token_info['token']}"
 

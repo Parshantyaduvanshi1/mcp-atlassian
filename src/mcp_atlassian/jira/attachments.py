@@ -300,6 +300,79 @@ class AttachmentsMixin(JiraClient, AttachmentsOperationsProto):
             "failed": failed,
         }
 
+    def fetch_and_cache_attachment(self, issue_key: str, filename: str) -> bool:
+        """Fetch a single attachment's content from Jira and store it in the cache.
+
+        Enables the stateless download-URL flow: any instance can populate its
+        (optionally shared) attachment cache on demand, instead of relying on a
+        prior ``download_issue_attachments`` call having run on the same instance.
+
+        Args:
+            issue_key: The Jira issue key (e.g., 'PROJ-123').
+            filename: The attachment filename to fetch.
+
+        Returns:
+            True if the attachment was found and cached, False otherwise.
+        """
+        issue_data = self.jira.issue(issue_key, fields="attachment")
+        if not isinstance(issue_data, dict) or "fields" not in issue_data:
+            return False
+
+        target: JiraAttachment | None = None
+        for raw in issue_data.get("fields", {}).get("attachment", []):
+            if not isinstance(raw, dict):
+                continue
+            candidate = JiraAttachment.from_api_response(raw)
+            if candidate.filename == filename and candidate.url:
+                target = candidate
+                break
+
+        if target is None or not target.url:
+            return False
+
+        from .attachment_cache import AttachmentCache
+
+        cache = get_attachment_cache()
+        max_download_bytes = (
+            cache._max_size_bytes
+            if isinstance(cache, AttachmentCache)
+            else 100 * 1024 * 1024
+        )
+
+        response = self.jira._session.get(target.url, stream=True)
+        response.raise_for_status()
+        content_buffer = bytearray()
+        try:
+            bytes_read = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                bytes_read += len(chunk)
+                if bytes_read > max_download_bytes:
+                    logger.error(
+                        f"Attachment '{filename}' exceeds maximum size "
+                        f"({max_download_bytes} bytes), aborting download"
+                    )
+                    return False
+                content_buffer.extend(chunk)
+        finally:
+            response.close()
+
+        mime_type = target.content_type or "application/octet-stream"
+        cache.store(
+            issue_key=issue_key,
+            filename=filename,
+            content=bytes(content_buffer),
+            mime_type=mime_type,
+        )
+        logger.info(
+            "On-demand cached attachment '%s' from %s (%d bytes)",
+            filename,
+            issue_key,
+            len(content_buffer),
+        )
+        return True
+
     def upload_attachment(self, issue_key: str, file_path: str) -> dict[str, Any]:
         """
         Upload a single attachment to a Jira issue.

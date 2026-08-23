@@ -80,6 +80,13 @@ logger = setup_logging(logging_level, logging_stream)
     help="Path for Streamable HTTP transport (e.g., /mcp).",
 )
 @click.option(
+    "--stateless-http",
+    is_flag=True,
+    help="Run Streamable HTTP transport in stateless mode (no per-session "
+    "transport state), so any request can be served by any instance behind a "
+    "round-robin load balancer.",
+)
+@click.option(
     "--confluence-url",
     help="Confluence URL (e.g., https://your-domain.atlassian.net/wiki)",
 )
@@ -176,6 +183,7 @@ def main(
     port: int,
     host: str,
     path: str | None,
+    stateless_http: bool,
     confluence_url: str | None,
     confluence_username: str | None,
     confluence_token: str | None,
@@ -320,6 +328,12 @@ def main(
         f"Final path for Streamable HTTP: {final_path if final_path else 'FastMCP default'}"
     )
 
+    # Stateless HTTP precedence
+    final_stateless_http = is_env_truthy("STATELESS_HTTP", "false")
+    if click_ctx and was_option_provided(click_ctx, "stateless_http"):
+        final_stateless_http = stateless_http
+    logger.debug(f"Final stateless_http for HTTP transports: {final_stateless_http}")
+
     cli_read_only_value = str(read_only).lower()
     os.environ["CLI_READ_ONLY_MODE"] = cli_read_only_value
 
@@ -395,6 +409,7 @@ def main(
         run_kwargs["host"] = final_host
         run_kwargs["port"] = final_port
         run_kwargs["log_level"] = logging.getLevelName(current_logging_level).lower()
+        run_kwargs["stateless_http"] = final_stateless_http
 
         if final_path is not None:
             run_kwargs["path"] = final_path

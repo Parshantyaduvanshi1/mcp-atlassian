@@ -1,5 +1,6 @@
 """Main FastMCP server setup for Atlassian integration."""
 
+import asyncio
 import json
 import logging
 import os
@@ -118,7 +119,7 @@ async def upload_endpoint(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid multipart form data"}, status_code=400)
 
     uploaded = []
-    max_file_bytes = staging._max_size_bytes
+    max_file_bytes = staging.max_file_bytes
     for _field_name, file_field in form.multi_items():
         if not hasattr(file_field, "filename") or not file_field.filename:
             continue
@@ -226,6 +227,49 @@ async def metrics_endpoint(request: Request) -> Response:
 
     content, content_type = metrics_collector.generate_metrics()
     return Response(content, media_type=content_type)
+
+
+def _cleanup_interval_seconds() -> int:
+    """Resolve the staging cleanup sweep interval in seconds; 0 disables it."""
+    raw = os.environ.get("STAGING_CLEANUP_INTERVAL_MINUTES", "15")
+    try:
+        minutes = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid STAGING_CLEANUP_INTERVAL_MINUTES=%r; using default of 15.", raw
+        )
+        minutes = 15
+    return max(0, minutes) * 60
+
+
+async def _sweep_staging_once() -> None:
+    """Run one cleanup pass over download tokens and staged uploads."""
+    try:
+        tokens = await asyncio.to_thread(get_attachment_cache().sweep_expired)
+        staged = await asyncio.to_thread(get_upload_staging().sweep_expired)
+        if tokens or staged:
+            logger.info(
+                "Staging cleanup reclaimed %d expired download token(s)/cache "
+                "entr(ies) and %d expired staged upload(s).",
+                tokens,
+                staged,
+            )
+        else:
+            logger.debug("Staging cleanup: nothing to reclaim.")
+    except Exception as exc:  # keep the sweeper loop alive across failures
+        logger.warning("Staging cleanup sweep failed: %s", exc, exc_info=True)
+
+
+async def _run_staging_cleanup(interval_seconds: int) -> None:
+    """Periodically reclaim expired download tokens and staged uploads.
+
+    Runs in-process so entries are reclaimed even when a minted download URL is
+    never fetched (nothing reads it to trigger the lazy per-request cleanup).
+    Deletes are idempotent, so every instance can safely sweep a shared volume.
+    """
+    while True:
+        await asyncio.sleep(interval_seconds)
+        await _sweep_staging_once()
 
 
 @asynccontextmanager
@@ -365,6 +409,16 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
     )
     logger.info(f"Enabled tools filter: {enabled_tools or 'All tools enabled'}")
 
+    cleanup_interval = _cleanup_interval_seconds()
+    cleanup_task: asyncio.Task | None = None
+    if cleanup_interval > 0:
+        cleanup_task = asyncio.create_task(_run_staging_cleanup(cleanup_interval))
+        logger.info(
+            "Started staging cleanup sweeper (every %d min).", cleanup_interval // 60
+        )
+    else:
+        logger.info("Staging cleanup sweeper disabled (interval=0).")
+
     try:
         yield {"app_lifespan_context": app_context}
     except Exception as e:
@@ -374,6 +428,12 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
         logger.info("Main Atlassian MCP server lifespan shutting down...")
         # Perform any necessary cleanup here
         try:
+            if cleanup_task is not None:
+                cleanup_task.cancel()
+                try:
+                    await cleanup_task
+                except asyncio.CancelledError:
+                    pass
             # Close any open connections if needed
             if loaded_jira_config:
                 logger.debug("Cleaning up Jira resources...")

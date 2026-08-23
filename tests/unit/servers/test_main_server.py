@@ -1,6 +1,7 @@
 """Tests for the main MCP server implementation."""
 
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -10,6 +11,8 @@ from starlette.responses import JSONResponse
 
 from mcp_atlassian.servers.main import (
     UserTokenMiddleware,
+    _cleanup_interval_seconds,
+    _sweep_staging_once,
     download_endpoint,
     main_mcp,
     upload_endpoint,
@@ -239,6 +242,62 @@ async def test_download_endpoint_serves_cached_attachment():
     assert response.body == b"pdf-bytes"
     assert response.headers["content-type"] == "application/pdf"
     assert "filename*=UTF-8''report%201.pdf" in response.headers["content-disposition"]
+
+
+class TestStagingCleanup:
+    """Tests for the in-process staging/token cleanup sweeper."""
+
+    def test_cleanup_interval_default(self):
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("STAGING_CLEANUP_INTERVAL_MINUTES", None)
+            assert _cleanup_interval_seconds() == 15 * 60
+
+    def test_cleanup_interval_custom(self):
+        with patch.dict("os.environ", {"STAGING_CLEANUP_INTERVAL_MINUTES": "5"}):
+            assert _cleanup_interval_seconds() == 5 * 60
+
+    def test_cleanup_interval_zero_disables(self):
+        with patch.dict("os.environ", {"STAGING_CLEANUP_INTERVAL_MINUTES": "0"}):
+            assert _cleanup_interval_seconds() == 0
+
+    def test_cleanup_interval_invalid_falls_back(self):
+        with patch.dict("os.environ", {"STAGING_CLEANUP_INTERVAL_MINUTES": "nope"}):
+            assert _cleanup_interval_seconds() == 15 * 60
+
+    @pytest.mark.anyio
+    async def test_sweep_once_invokes_both_stores(self):
+        cache = MagicMock()
+        cache.sweep_expired.return_value = 2
+        staging = MagicMock()
+        staging.sweep_expired.return_value = 1
+        with (
+            patch(
+                "mcp_atlassian.servers.main.get_attachment_cache", return_value=cache
+            ),
+            patch(
+                "mcp_atlassian.servers.main.get_upload_staging", return_value=staging
+            ),
+        ):
+            await _sweep_staging_once()
+        cache.sweep_expired.assert_called_once()
+        staging.sweep_expired.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_sweep_once_swallows_errors(self):
+        cache = MagicMock()
+        cache.sweep_expired.side_effect = RuntimeError("boom")
+        with (
+            patch(
+                "mcp_atlassian.servers.main.get_attachment_cache", return_value=cache
+            ),
+            patch(
+                "mcp_atlassian.servers.main.get_upload_staging",
+                return_value=MagicMock(),
+            ),
+        ):
+            # Must not raise despite the sweep failing.
+            await _sweep_staging_once()
+        cache.sweep_expired.assert_called_once()
 
 
 class TestUserTokenMiddleware:

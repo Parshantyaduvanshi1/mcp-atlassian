@@ -944,6 +944,38 @@ Both transport types support single-user and multi-user authentication:
     ```
 </details>
 
+<details> <summary>Stateless HTTP (Horizontal Scaling)</summary>
+
+By default the `streamable-http` transport keeps per-session state in memory, which requires sticky sessions when running more than one replica. Enable **stateless mode** so any request can be served by any instance behind a round-robin load balancer — ideal for multi-replica / autoscaled deployments.
+
+Enable it with either the CLI flag or the environment variable:
+
+| Method | Value |
+| --- | --- |
+| CLI flag | `--stateless-http` |
+| Environment variable | `STATELESS_HTTP=true` |
+
+> [!NOTE]
+> - Applies to the `streamable-http` transport only (ignored for `stdio`).
+> - The CLI flag takes precedence over the `STATELESS_HTTP` environment variable.
+> - In stateless mode the server does not return an `mcp-session-id` header, so clients must not rely on session affinity.
+
+```bash
+# CLI flag
+docker run --rm -p 9000:9000 \
+  --env-file /path/to/your/.env \
+  ghcr.io/SharkyND/mcp-atlassian:latest \
+  --transport streamable-http --port 9000 --stateless-http -vv
+
+# OR via environment variable
+docker run --rm -p 9000:9000 \
+  --env-file /path/to/your/.env \
+  -e STATELESS_HTTP=true \
+  ghcr.io/SharkyND/mcp-atlassian:latest \
+  --transport streamable-http --port 9000 -vv
+```
+</details>
+
 <details> <summary>Multi-User Authentication Setup</summary>
 
 Here's a complete example of setting up multi-user authentication with streamable-HTTP transport:

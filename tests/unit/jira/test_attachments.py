@@ -2,14 +2,26 @@
 
 import os
 import tempfile
+from datetime import timedelta
 from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
 from mcp_atlassian.jira import JiraFetcher
-from mcp_atlassian.jira.attachment_cache import AttachmentCache
+from mcp_atlassian.jira.attachment_cache import (
+    AttachmentCache,
+    DownloadTokenStore,
+    FilesystemDownloadTokenStore,
+    MemoryDownloadTokenStore,
+    _build_download_token_store,
+)
+from mcp_atlassian.jira.attachment_cache import _utcnow as _cache_utcnow
 from mcp_atlassian.jira.attachments import AttachmentsMixin
-from mcp_atlassian.jira.upload_staging import UploadStagingStore
+from mcp_atlassian.jira.upload_staging import (
+    FilesystemUploadStagingBackend,
+    UploadStagingBackend,
+    UploadStagingStore,
+)
 
 # Test scenarios for AttachmentsMixin
 #
@@ -500,6 +512,74 @@ class TestAttachmentsMixin:
         assert "Failed to cache attachment content" in result["failed"][0]["error"]
         assert "content" not in result["failed"][0]
 
+    def test_fetch_and_cache_attachment_success(self, attachments_mixin):
+        """fetch_and_cache_attachment downloads a single file and stores it."""
+        attachments_mixin.jira.issue.return_value = {
+            "fields": {"attachment": [{"filename": "report.pdf"}]}
+        }
+
+        mock_attachment = MagicMock()
+        mock_attachment.filename = "report.pdf"
+        mock_attachment.url = "https://test.url/report.pdf"
+        mock_attachment.content_type = "application/pdf"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.iter_content.return_value = [b"pdf-", b"bytes"]
+        attachments_mixin.jira._session.get.return_value = mock_response
+
+        cache = MagicMock()
+        with (
+            patch(
+                "mcp_atlassian.models.jira.JiraAttachment.from_api_response",
+                return_value=mock_attachment,
+            ),
+            patch(
+                "mcp_atlassian.jira.attachments.get_attachment_cache",
+                return_value=cache,
+            ),
+        ):
+            result = attachments_mixin.fetch_and_cache_attachment(
+                "TEST-123", "report.pdf"
+            )
+
+        assert result is True
+        cache.store.assert_called_once_with(
+            issue_key="TEST-123",
+            filename="report.pdf",
+            content=b"pdf-bytes",
+            mime_type="application/pdf",
+        )
+
+    def test_fetch_and_cache_attachment_not_found(self, attachments_mixin):
+        """fetch_and_cache_attachment returns False when the filename is absent."""
+        attachments_mixin.jira.issue.return_value = {
+            "fields": {"attachment": [{"filename": "other.txt"}]}
+        }
+
+        mock_attachment = MagicMock()
+        mock_attachment.filename = "other.txt"
+        mock_attachment.url = "https://test.url/other.txt"
+
+        cache = MagicMock()
+        with (
+            patch(
+                "mcp_atlassian.models.jira.JiraAttachment.from_api_response",
+                return_value=mock_attachment,
+            ),
+            patch(
+                "mcp_atlassian.jira.attachments.get_attachment_cache",
+                return_value=cache,
+            ),
+        ):
+            result = attachments_mixin.fetch_and_cache_attachment(
+                "TEST-123", "missing.pdf"
+            )
+
+        assert result is False
+        cache.store.assert_not_called()
+        attachments_mixin.jira._session.get.assert_not_called()
+
 
 class TestUploadStagingStore:
     """Tests for the upload staging session validation flow."""
@@ -881,3 +961,392 @@ class TestAttachmentCacheDownloadTokens:
         # Assertions
         assert result["success"] is False
         assert "No issue key provided" in result["error"]
+
+
+class TestFilesystemUploadStagingBackend:
+    """Tests for the shared-filesystem upload staging backend."""
+
+    @pytest.fixture
+    def backend(self, tmp_path):
+        return FilesystemUploadStagingBackend(
+            root_dir=str(tmp_path / "staging"),
+            ttl_minutes=30,
+            max_size_mb=1,
+        )
+
+    def test_is_a_backend(self, backend):
+        assert isinstance(backend, UploadStagingBackend)
+
+    def test_create_and_validate_session(self, backend):
+        session_id = backend.create_session()
+        assert session_id
+        assert backend.is_valid_session(session_id) is True
+
+    def test_invalid_session_id_rejected(self, backend):
+        assert backend.is_valid_session("../etc/passwd") is False
+        assert backend.is_valid_session("unknown") is False
+
+    def test_store_and_get_roundtrip(self, backend):
+        session_id = backend.create_session()
+        file_id = backend.store(session_id, "hello.txt", b"hi there", "text/plain")
+        entry = backend.get(session_id, file_id)
+        assert entry is not None
+        assert entry["filename"] == "hello.txt"
+        assert entry["content"] == b"hi there"
+        assert entry["mime_type"] == "text/plain"
+        assert entry["created_at"] is not None
+        assert entry["expires_at"] is not None
+
+    def test_store_rejects_unknown_session(self, backend):
+        with pytest.raises(PermissionError):
+            backend.store("unknown-session", "f.txt", b"x", "text/plain")
+
+    def test_store_rejects_oversize_file(self, backend):
+        session_id = backend.create_session()
+        with pytest.raises(ValueError):
+            backend.store(session_id, "big.bin", b"x" * (1024 * 1024 + 1), "app/bin")
+
+    def test_remove_deletes_file(self, backend):
+        session_id = backend.create_session()
+        file_id = backend.store(session_id, "f.txt", b"data", "text/plain")
+        backend.remove(session_id, file_id)
+        assert backend.get(session_id, file_id) is None
+
+    def test_get_unknown_returns_none(self, backend):
+        session_id = backend.create_session()
+        assert backend.get(session_id, "missing") is None
+        assert backend.get(session_id, "../evil") is None
+
+    def test_expired_session_is_invalid(self, tmp_path):
+        backend = FilesystemUploadStagingBackend(
+            root_dir=str(tmp_path / "staging"),
+            ttl_minutes=0,
+            max_size_mb=1,
+        )
+        session_id = backend.create_session()
+        assert backend.is_valid_session(session_id) is False
+
+    def test_clear_removes_sessions(self, backend):
+        session_id = backend.create_session()
+        backend.store(session_id, "f.txt", b"data", "text/plain")
+        backend.clear()
+        assert backend.is_valid_session(session_id) is False
+
+    def test_sweep_expired_reclaims_whole_expired_session(self, backend):
+        """A never-finalized session is reclaimed once its TTL elapses."""
+        session_id = backend.create_session()
+        backend.store(session_id, "f.txt", b"data", "text/plain")
+        future = _cache_utcnow() + timedelta(hours=1)
+        with patch("mcp_atlassian.jira.upload_staging._utcnow", return_value=future):
+            removed = backend.sweep_expired()
+        assert removed == 1
+        assert backend.get(session_id, "f.txt") is None
+
+    def test_sweep_expired_keeps_live_session(self, backend):
+        """Unexpired staged files survive a sweep."""
+        session_id = backend.create_session()
+        file_id = backend.store(session_id, "f.txt", b"data", "text/plain")
+        removed = backend.sweep_expired()
+        assert removed == 0
+        assert backend.get(session_id, file_id) is not None
+
+    def test_persists_across_instances(self, tmp_path):
+        root = str(tmp_path / "shared")
+        first = FilesystemUploadStagingBackend(root_dir=root, max_size_mb=1)
+        session_id = first.create_session()
+        file_id = first.store(session_id, "f.txt", b"shared-bytes", "text/plain")
+
+        # A second instance (simulating a different server pod) sees the file.
+        second = FilesystemUploadStagingBackend(root_dir=root, max_size_mb=1)
+        entry = second.get(session_id, file_id)
+        assert entry is not None
+        assert entry["content"] == b"shared-bytes"
+
+    def test_uri_helpers_inherited(self, backend):
+        uri = backend.make_uri("sess", "file")
+        assert uri == "upload://sessions/sess/file"
+        assert backend.parse_uri(uri) == ("sess", "file")
+
+
+class TestGetUploadStagingFactory:
+    """Tests for the environment-driven upload staging backend factory."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_singleton(self):
+        import mcp_atlassian.jira.upload_staging as staging_module
+
+        staging_module._upload_staging = None
+        yield
+        staging_module._upload_staging = None
+
+    def test_defaults_to_memory(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("UPLOAD_STAGING_BACKEND", None)
+            backend = get_upload_staging()
+        assert isinstance(backend, UploadStagingStore)
+
+    def test_memory_explicit(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(os.environ, {"UPLOAD_STAGING_BACKEND": "memory"}):
+            backend = get_upload_staging()
+        assert isinstance(backend, UploadStagingStore)
+
+    def test_filesystem_backend(self, tmp_path):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(
+            os.environ,
+            {
+                "UPLOAD_STAGING_BACKEND": "filesystem",
+                "UPLOAD_STAGING_DIR": str(tmp_path / "fs"),
+            },
+        ):
+            backend = get_upload_staging()
+        assert isinstance(backend, FilesystemUploadStagingBackend)
+
+    def test_filesystem_requires_dir(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(os.environ, {"UPLOAD_STAGING_BACKEND": "filesystem"}):
+            os.environ.pop("UPLOAD_STAGING_DIR", None)
+            with pytest.raises(ValueError, match="UPLOAD_STAGING_DIR"):
+                get_upload_staging()
+
+    def test_unknown_backend_raises(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(os.environ, {"UPLOAD_STAGING_BACKEND": "nope"}):
+            with pytest.raises(ValueError, match="Unknown UPLOAD_STAGING_BACKEND"):
+                get_upload_staging()
+
+    def test_dotted_path_backend(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        path = "mcp_atlassian.jira.upload_staging:FilesystemUploadStagingBackend"
+        # FilesystemUploadStagingBackend needs a root_dir positional arg, so a
+        # bare dotted path to it will fail construction; use a tiny stub instead.
+        with patch.dict(os.environ, {"UPLOAD_STAGING_BACKEND": path}):
+            with pytest.raises(TypeError):
+                get_upload_staging()
+
+    def test_invalid_dotted_path_raises(self):
+        from mcp_atlassian.jira.upload_staging import get_upload_staging
+
+        with patch.dict(
+            os.environ, {"UPLOAD_STAGING_BACKEND": "not.a.real.module:Nope"}
+        ):
+            with pytest.raises((ImportError, ValueError, AttributeError)):
+                get_upload_staging()
+
+
+class TestFilesystemDownloadTokenStore:
+    """Tests for the shared-filesystem download token store."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        return FilesystemDownloadTokenStore(root_dir=str(tmp_path / "downloads"))
+
+    def _expiry(self, minutes: int = 5):
+        from datetime import timedelta
+
+        from mcp_atlassian.jira.attachment_cache import _utcnow
+
+        return _utcnow() + timedelta(minutes=minutes)
+
+    def test_is_a_store(self, store):
+        assert isinstance(store, DownloadTokenStore)
+
+    def test_create_and_get_roundtrip(self, store):
+        token = store.create(
+            "PROJ-1", "report.pdf", "application/pdf", b"pdf-bytes", self._expiry()
+        )
+        entry = store.get(token)
+        assert entry is not None
+        assert entry["content"] == b"pdf-bytes"
+        assert entry["mime_type"] == "application/pdf"
+        assert entry["filename"] == "report.pdf"
+        assert entry["issue_key"] == "PROJ-1"
+
+    def test_unknown_token_returns_none(self, store):
+        assert store.get("does-not-exist") is None
+        assert store.get("../evil") is None
+
+    def test_expired_token_returns_none(self, store):
+        token = store.create(
+            "PROJ-1", "f.pdf", "application/pdf", b"x", self._expiry(minutes=-1)
+        )
+        assert store.get(token) is None
+
+    def test_clear_removes_tokens(self, store):
+        token = store.create("PROJ-1", "f.pdf", "application/pdf", b"x", self._expiry())
+        store.clear()
+        assert store.get(token) is None
+
+    def test_token_resolvable_across_instances(self, tmp_path):
+        """A token minted by one instance is served by another sharing the dir."""
+        root = str(tmp_path / "shared")
+        first = FilesystemDownloadTokenStore(root_dir=root)
+        token = first.create(
+            "PROJ-1", "f.pdf", "application/pdf", b"shared-bytes", self._expiry()
+        )
+
+        # Simulate a different pod pointed at the same shared volume.
+        second = FilesystemDownloadTokenStore(root_dir=root)
+        entry = second.get(token)
+        assert entry is not None
+        assert entry["content"] == b"shared-bytes"
+
+
+class TestAttachmentCacheWithFilesystemTokens:
+    """AttachmentCache download tokens work across instances via shared dir."""
+
+    def test_download_token_resolvable_by_second_cache(self, tmp_path):
+        root = str(tmp_path / "dl")
+        cache_a = AttachmentCache(
+            ttl_minutes=10,
+            max_size_mb=1,
+            token_store=FilesystemDownloadTokenStore(root_dir=root),
+        )
+        cache_a.store(
+            issue_key="PROJ-1",
+            filename="report.pdf",
+            content=b"pdf-bytes",
+            mime_type="application/pdf",
+        )
+        token_info = cache_a.create_download_token("PROJ-1", "report.pdf")
+
+        # A second cache instance (fresh, empty local cache) resolves the token.
+        cache_b = AttachmentCache(
+            ttl_minutes=10,
+            max_size_mb=1,
+            token_store=FilesystemDownloadTokenStore(root_dir=root),
+        )
+        attachment = cache_b.get_by_download_token(token_info["token"])
+        assert attachment is not None
+        assert attachment["content"] == b"pdf-bytes"
+        assert attachment["mime_type"] == "application/pdf"
+
+
+class TestSweepExpired:
+    """Proactive cleanup of expired download tokens and staged uploads."""
+
+    def test_filesystem_token_store_removes_unfetched_expired_token(self, tmp_path):
+        """A minted-but-never-fetched download token is reclaimed on sweep."""
+        root = tmp_path / "dl"
+        store = FilesystemDownloadTokenStore(root_dir=str(root))
+        token = store.create(
+            issue_key="PROJ-1",
+            filename="report.pdf",
+            mime_type="application/pdf",
+            content=b"pdf-bytes",
+            expires_at=_cache_utcnow() - timedelta(minutes=1),
+        )
+        # Nothing ever reads the token, so only a sweep can reclaim it.
+        assert (root / f"{token}.bin").exists()
+        assert (root / f"{token}.json").exists()
+
+        removed = store.sweep_expired()
+
+        assert removed == 1
+        assert not (root / f"{token}.bin").exists()
+        assert not (root / f"{token}.json").exists()
+
+    def test_filesystem_token_store_keeps_live_token(self, tmp_path):
+        store = FilesystemDownloadTokenStore(root_dir=str(tmp_path / "dl"))
+        token = store.create(
+            issue_key="PROJ-1",
+            filename="report.pdf",
+            mime_type="application/pdf",
+            content=b"pdf-bytes",
+            expires_at=_cache_utcnow() + timedelta(minutes=5),
+        )
+        assert store.sweep_expired() == 0
+        assert store.get(token) is not None
+
+    def test_filesystem_token_store_reaps_old_temp_files(self, tmp_path):
+        root = tmp_path / "dl"
+        store = FilesystemDownloadTokenStore(root_dir=str(root))
+        stale = root / "abc.json.deadbeef.tmp"
+        stale.write_bytes(b"partial")
+        old = (_cache_utcnow() - timedelta(hours=2)).timestamp()
+        os.utime(stale, (old, old))
+
+        store.sweep_expired()
+
+        assert not stale.exists()
+
+    def test_memory_token_store_sweep_expired(self):
+        store = MemoryDownloadTokenStore()
+        token = store.create(
+            issue_key="PROJ-1",
+            filename="f.txt",
+            mime_type="text/plain",
+            content=b"x",
+            expires_at=_cache_utcnow() - timedelta(minutes=1),
+        )
+        assert store.sweep_expired() == 1
+        assert store.get(token) is None
+
+    def test_memory_staging_sweep_expired(self):
+        store = UploadStagingStore(ttl_minutes=30, max_size_mb=1)
+        session_id = store.create_session()
+        store.store(session_id, "f.txt", b"data", "text/plain")
+        future = _cache_utcnow() + timedelta(hours=1)
+        with patch("mcp_atlassian.jira.upload_staging._utcnow", return_value=future):
+            removed = store.sweep_expired()
+        assert removed == 1
+
+    def test_attachment_cache_sweep_delegates_to_token_store(self, tmp_path):
+        store = FilesystemDownloadTokenStore(root_dir=str(tmp_path / "dl"))
+        cache = AttachmentCache(ttl_minutes=10, max_size_mb=1, token_store=store)
+        store.create(
+            issue_key="PROJ-1",
+            filename="f.txt",
+            mime_type="text/plain",
+            content=b"x",
+            expires_at=_cache_utcnow() - timedelta(minutes=1),
+        )
+        assert cache.sweep_expired() >= 1
+
+
+class TestBuildDownloadTokenStoreFactory:
+    """Tests for the environment-driven download token store factory."""
+
+    def test_defaults_to_memory(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ATTACHMENT_DOWNLOAD_BACKEND", None)
+            store = _build_download_token_store()
+        assert isinstance(store, MemoryDownloadTokenStore)
+
+    def test_filesystem_backend(self, tmp_path):
+        with patch.dict(
+            os.environ,
+            {
+                "ATTACHMENT_DOWNLOAD_BACKEND": "filesystem",
+                "ATTACHMENT_DOWNLOAD_DIR": str(tmp_path / "dl"),
+            },
+        ):
+            store = _build_download_token_store()
+        assert isinstance(store, FilesystemDownloadTokenStore)
+
+    def test_filesystem_requires_dir(self):
+        with patch.dict(os.environ, {"ATTACHMENT_DOWNLOAD_BACKEND": "filesystem"}):
+            os.environ.pop("ATTACHMENT_DOWNLOAD_DIR", None)
+            with pytest.raises(ValueError, match="ATTACHMENT_DOWNLOAD_DIR"):
+                _build_download_token_store()
+
+    def test_unknown_backend_raises(self):
+        with patch.dict(os.environ, {"ATTACHMENT_DOWNLOAD_BACKEND": "nope"}):
+            with pytest.raises(ValueError, match="Unknown ATTACHMENT_DOWNLOAD_BACKEND"):
+                _build_download_token_store()
+
+    def test_invalid_dotted_path_raises(self):
+        with patch.dict(
+            os.environ,
+            {"ATTACHMENT_DOWNLOAD_BACKEND": "not.a.real.module:Nope"},
+        ):
+            with pytest.raises((ImportError, ValueError, AttributeError)):
+                _build_download_token_store()

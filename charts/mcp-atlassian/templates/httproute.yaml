@@ -12,15 +12,20 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  {{- if .Values.gatewayApi.gatewayNamespace }}
   parentRefs:
+  {{- if .Values.gatewayApi.listenerSet.enabled }}
+    - group: gateway.networking.k8s.io
+      kind: ListenerSet
+      name: {{ $fullName }}
+      namespace: {{ .Release.Namespace }}
+      sectionName: {{ .Values.gatewayApi.listenerSet.listenerName | default "https" }}
+  {{- else if .Values.gatewayApi.gatewayNamespace }}
     - name: {{ .Values.gatewayApi.gatewayName }}
       namespace: {{ .Values.gatewayApi.gatewayNamespace }}
       {{- if .Values.gatewayApi.sectionName }}
       sectionName: {{ .Values.gatewayApi.sectionName }}
       {{- end }}
   {{- else }}
-  parentRefs:
     - name: {{ .Values.gatewayApi.gatewayName }}
       {{- if .Values.gatewayApi.sectionName }}
       sectionName: {{ .Values.gatewayApi.sectionName }}

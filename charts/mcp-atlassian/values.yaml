@@ -90,6 +90,49 @@ gatewayApi:
   gatewayNamespace: ""
   # Listener section name on the Gateway (optional)
   sectionName: ""
+  # Optional ListenerSet: attach an HTTPS listener (with a cert-manager-issued
+  # cert) to the Gateway, and point the HTTPRoute at it instead of the Gateway.
+  # Use when the shared Gateway exposes no HTTPS listener and expects each app to
+  # bring its own (Envoy Gateway `allowedListeners.from: All`).
+  # Follows the same value structure as the upstream Argo CD chart.
+  listenerSet:
+    enabled: false
+    # Extra labels for the ListenerSet
+    labels: {}
+    # Extra annotations for the ListenerSet
+    # (e.g. cert-manager.io/cluster-issuer: sectigo)
+    annotations: {}
+    # Gateway API parentRef for the ListenerSet, passed through verbatim. Must
+    # reference an existing Gateway. Unlike HTTPRoute, ListenerSet accepts
+    # exactly one parentRef. Required when listenerSet is enabled.
+    parentRef: {}
+      # group: gateway.networking.k8s.io
+      # kind: Gateway
+      # name: example-gateway
+      # namespace: example-gateway-namespace
+    # Hostname for the synthesized listener (defaults to first gatewayApi.hostnames)
+    hostname: ""
+    # Name of the synthesized listener. Also used as the sectionName in the
+    # auto-derived HTTPRoute parentRef.
+    listenerName: https
+    # Port for the synthesized listener
+    port: 443
+    # Protocol for the synthesized listener
+    protocol: HTTPS
+    # TLS configuration for the synthesized listener
+    tls:
+      enabled: true
+      # TLS termination mode
+      mode: Terminate
+      # Secret the listener terminates with (defaults to <fullname>-tls)
+      secretName: ""
+    # allowedRoutes for the synthesized listener
+    allowedRoutes:
+      namespaces:
+        from: Same
+    # Listeners to attach verbatim. When non-empty, used as-is and all the
+    # synthesized listener fields above are ignored.
+    listeners: []
   # Annotations to add to the HTTPRoute
   annotations: {}
   # Hostnames to match (optional, defaults to all hostnames on the listener)
@@ -176,6 +219,42 @@ volumeMounts: []
 # - name: foo
 #   mountPath: "/etc/foo"
 #   readOnly: true
+
+# Shared storage for stateless, multi-replica deployments.
+# When enabled, upload staging and attachment download tokens are persisted to a
+# shared volume (e.g. an EFS / Azure Files / NFS / any RWX backed PVC) so any
+# replica can serve them. This lets you run replicaCount > 1 WITHOUT sticky
+# sessions. Leave disabled for single-replica deployments (in-memory default),
+# where each pod uses only its own memory.
+#
+# Provide storage in one of two ways:
+#   1. Set `storageClass` (and optionally `size`) to let the chart provision an
+#      RWX PersistentVolumeClaim for you.
+#   2. Set `existingClaim` to mount a PVC you provisioned yourself (Terraform,
+#      etc.). `existingClaim` takes precedence over `storageClass`.
+sharedStorage:
+  enabled: false
+  # Name of a pre-provisioned ReadWriteMany PVC to mount. Takes precedence over
+  # storageClass when set.
+  existingClaim: ""
+  # StorageClass used to provision an RWX PVC when existingClaim is empty.
+  # Must support ReadWriteMany (e.g. efs-sc, azurefile-csi, nfs).
+  storageClass: ""
+  # Requested size for the provisioned PVC.
+  size: 1Gi
+  # Access modes for the provisioned PVC.
+  accessModes:
+    - ReadWriteMany
+  # Extra annotations for the provisioned PVC.
+  annotations: {}
+  # Mount path inside the container for shared state.
+  mountPath: /var/lib/mcp-atlassian
+  # When enabled, these env vars are injected automatically:
+  #   STATELESS_HTTP=true
+  #   UPLOAD_STAGING_BACKEND=filesystem
+  #   UPLOAD_STAGING_DIR=<mountPath>/upload-staging
+  #   ATTACHMENT_DOWNLOAD_BACKEND=filesystem
+  #   ATTACHMENT_DOWNLOAD_DIR=<mountPath>/attachment-downloads
 
 nodeSelector: {}
 

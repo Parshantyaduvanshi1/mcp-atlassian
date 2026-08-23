@@ -113,7 +113,59 @@ class TestMainTransportSelection:
                             # Verify error was handled - sys.exit called with 1 for error
                             # and then with 0 in the finally block
                             assert mock_exit.call_count == 2
-                            assert mock_exit.call_args_list[0][0][0] == 1  # Error exit
+                            # Error exit
+                            assert mock_exit.call_args_list[0][0][0] == 1
                             assert (
                                 mock_exit.call_args_list[1][0][0] == 0
                             )  # Finally exit
+
+
+class TestStatelessHttpSelection:
+    """Test resolution of the stateless_http option into run_async kwargs."""
+
+    def _run_main_and_capture_kwargs(self, argv, env):
+        """Invoke main() and return the kwargs passed to run_async."""
+        with patch(
+            "mcp_atlassian.servers.main_mcp.run_async", new_callable=MagicMock
+        ) as mock_run_async:
+            with patch("asyncio.run"):
+                with patch.dict("os.environ", env, clear=False):
+                    with patch("sys.argv", argv):
+                        try:
+                            main()
+                        except SystemExit:
+                            pass
+        assert mock_run_async.called
+        return mock_run_async.call_args.kwargs
+
+    def test_stateless_http_defaults_to_false(self):
+        kwargs = self._run_main_and_capture_kwargs(
+            ["mcp-atlassian"], {"TRANSPORT": "streamable-http"}
+        )
+        assert kwargs["stateless_http"] is False
+
+    def test_stateless_http_enabled_via_cli_flag(self):
+        kwargs = self._run_main_and_capture_kwargs(
+            ["mcp-atlassian", "--stateless-http"], {"TRANSPORT": "streamable-http"}
+        )
+        assert kwargs["stateless_http"] is True
+
+    def test_stateless_http_enabled_via_env(self):
+        kwargs = self._run_main_and_capture_kwargs(
+            ["mcp-atlassian"],
+            {"TRANSPORT": "streamable-http", "STATELESS_HTTP": "true"},
+        )
+        assert kwargs["stateless_http"] is True
+
+    def test_cli_flag_overrides_env(self):
+        kwargs = self._run_main_and_capture_kwargs(
+            ["mcp-atlassian", "--stateless-http"],
+            {"TRANSPORT": "streamable-http", "STATELESS_HTTP": "false"},
+        )
+        assert kwargs["stateless_http"] is True
+
+    def test_stateless_http_not_passed_for_stdio(self):
+        kwargs = self._run_main_and_capture_kwargs(
+            ["mcp-atlassian"], {"TRANSPORT": "stdio", "STATELESS_HTTP": "true"}
+        )
+        assert "stateless_http" not in kwargs

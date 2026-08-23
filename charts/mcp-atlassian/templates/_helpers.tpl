@@ -60,3 +60,24 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether shared storage should be mounted (enabled and a claim is available).
+*/}}
+{{- define "mcp-atlassian.sharedStorageEnabled" -}}
+{{- if and .Values.sharedStorage.enabled (or .Values.sharedStorage.existingClaim .Values.sharedStorage.storageClass) -}}
+true
+{{- end -}}
+{{- end }}
+
+{{/*
+Name of the PVC to mount for shared storage. Prefers an existing claim, falling
+back to the chart-provisioned claim name.
+*/}}
+{{- define "mcp-atlassian.sharedStorageClaimName" -}}
+{{- if .Values.sharedStorage.existingClaim -}}
+{{- .Values.sharedStorage.existingClaim -}}
+{{- else -}}
+{{- printf "%s-shared" (include "mcp-atlassian.fullname" .) -}}
+{{- end -}}
+{{- end }}

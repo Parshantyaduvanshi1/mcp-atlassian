@@ -1,0 +1,19 @@
+{{- if and .Values.sharedStorage.enabled (not .Values.sharedStorage.existingClaim) .Values.sharedStorage.storageClass -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "mcp-atlassian.fullname" . }}-shared
+  labels:
+    {{- include "mcp-atlassian.labels" . | nindent 4 }}
+  {{- with .Values.sharedStorage.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.sharedStorage.accessModes | nindent 4 }}
+  storageClassName: {{ .Values.sharedStorage.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ .Values.sharedStorage.size | quote }}
+{{- end }}
