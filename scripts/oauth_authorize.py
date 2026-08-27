@@ -266,12 +266,12 @@ def run_oauth_flow(args: argparse.Namespace) -> bool:
         return False
 
     if oauth_config.exchange_code_for_tokens(authorization_code):
-        logger.info("OAuth authorization flow completed successfully.")
+        logger.info("🎉 OAuth authorization flow completed successfully!")
 
         if oauth_config.cloud_id:
             logger.info(f"Retrieved Cloud ID: {oauth_config.cloud_id}")
             logger.info(
-                "\nAdd/update the following in your .env file or environment variables:"
+                "\n💡 Tip: Add/update the following in your .env file or environment variables:"
             )
             logger.info(f"ATLASSIAN_OAUTH_CLIENT_ID={oauth_config.client_id}")
             logger.info(f"ATLASSIAN_OAUTH_CLIENT_SECRET={oauth_config.client_secret}")
@@ -305,6 +305,7 @@ def main() -> int:
         help="OAuth Redirect URI (e.g., http://localhost:8080/callback)",
     )
     parser.add_argument("--scope", help="OAuth Scope (space-separated)")
+
     args = parser.parse_args()
 
     # Check for environment variables if arguments are not provided
@@ -316,6 +317,7 @@ def main() -> int:
         args.redirect_uri = os.getenv("ATLASSIAN_OAUTH_REDIRECT_URI")
     if not args.scope:
         args.scope = os.getenv("ATLASSIAN_OAUTH_SCOPE")
+
     # Validate required arguments
     missing = []
     if not args.client_id:
@@ -334,7 +336,7 @@ def main() -> int:
 
     # Check for offline_access scope
     if args.scope and "offline_access" not in args.scope.split():
-        logger.warning("\nWARNING: The 'offline_access' scope is missing!")
+        logger.warning("\n⚠️ WARNING: The 'offline_access' scope is missing!")
         logger.warning(
             "Without this scope, refresh tokens will not be issued and authentication will fail when tokens expire."
         )

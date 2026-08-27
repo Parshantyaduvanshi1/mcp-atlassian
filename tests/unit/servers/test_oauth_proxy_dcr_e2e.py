@@ -152,6 +152,51 @@ async def test_oauth_proxy_rejects_unregistered_redirect_uri(
 
 
 @pytest.mark.anyio
+async def test_oauth_proxy_requires_exact_registered_redirect_uri(
+    oauth_proxy_testbed: OAuthProxyTestbed,
+) -> None:
+    """URI normalization must not weaken registered redirect matching."""
+    harness = oauth_proxy_testbed.harness
+    registered_client = await harness.register("https://client.company.com/callback")
+
+    response = await harness._client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": registered_client.client_id,
+            "redirect_uri": "https://client.company.com/callback/",
+            "scope": "read:jira-work",
+            "state": "harness-client-state",
+            "code_challenge": "challenge",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code >= 400
+
+
+@pytest.mark.anyio
+async def test_oauth_proxy_rejects_wildcard_dcr_redirect_uri(
+    oauth_proxy_testbed: OAuthProxyTestbed,
+) -> None:
+    """DCR stores concrete client callbacks, never redirect patterns."""
+    response = await oauth_proxy_testbed.harness._client.post(
+        "/register",
+        json={
+            "client_name": "wildcard-client",
+            "redirect_uris": ["https://client.company.com/*"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "token_endpoint_auth_method": "none",
+        },
+    )
+
+    assert 400 <= response.status_code < 500
+    assert "wildcard" in response.text.lower()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "redirect_uri",
     [

@@ -15,7 +15,7 @@ from mcp.server.auth.provider import (
     OAuthClientInformationFull,
     RegistrationError,
 )
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, AnyUrl
 
 logger = logging.getLogger("mcp-atlassian.server.oauth_proxy")
 
@@ -24,6 +24,14 @@ def _normalize_list(values: Iterable[str] | None) -> list[str] | None:
     if values is None:
         return None
     return [value.strip() for value in values if value and value.strip()]
+
+
+def _is_registered_redirect_uri(
+    redirect_uri: str,
+    registered_uris: Iterable[str | AnyUrl],
+) -> bool:
+    """Return whether a redirect URI exactly matches a registered URI."""
+    return redirect_uri in {str(uri) for uri in registered_uris}
 
 
 def parse_env_list(raw: str | None) -> list[str] | None:
@@ -91,9 +99,7 @@ class HardenedOAuthProxy(OAuthProxy):
             _callback_uri(str(self.base_url), self._redirect_path)
         )
 
-    async def get_client(
-        self, client_id: str
-    ) -> OAuthClientInformationFull | None:
+    async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
         """Load a client with validation bound to its registered callbacks."""
         client = await super().get_client(client_id)
         if client is not None and hasattr(client, "allowed_redirect_uri_patterns"):
@@ -102,11 +108,14 @@ class HardenedOAuthProxy(OAuthProxy):
             ]
         return client
 
-    async def register_client(
-        self, client_info: OAuthClientInformationFull
-    ) -> None:
+    async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         """Register a client after enforcing redirect, grant, and scope policy."""
         for redirect_uri in client_info.redirect_uris or []:
+            if "*" in str(redirect_uri):
+                raise RegistrationError(
+                    "invalid_redirect_uri",
+                    "Wildcard client redirect URIs are not allowed",
+                )
             if _redirect_target(str(redirect_uri)) == self._proxy_callback_target:
                 raise RegistrationError(
                     "invalid_redirect_uri",
@@ -117,9 +126,7 @@ class HardenedOAuthProxy(OAuthProxy):
         if self._allowed_grant_types is not None:
             requested = list(client_info.grant_types or [])
             filtered = [
-                grant
-                for grant in requested
-                if grant in self._allowed_grant_types
+                grant for grant in requested if grant in self._allowed_grant_types
             ]
             updates["grant_types"] = filtered or list(self._allowed_grant_types)
 
@@ -135,10 +142,10 @@ class HardenedOAuthProxy(OAuthProxy):
         params: AuthorizationParams,
     ) -> str:
         """Authorize only callbacks registered to the requesting client."""
-        registered_redirects = {
-            str(redirect_uri) for redirect_uri in client.redirect_uris or []
-        }
-        if str(params.redirect_uri) not in registered_redirects:
+        if not _is_registered_redirect_uri(
+            str(params.redirect_uri),
+            client.redirect_uris or [],
+        ):
             raise AuthorizeError(
                 error="invalid_request",
                 error_description="Redirect URI is not registered for this client",

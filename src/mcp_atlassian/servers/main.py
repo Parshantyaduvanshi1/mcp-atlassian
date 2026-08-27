@@ -27,8 +27,8 @@ from mcp_atlassian.jira import JiraFetcher
 from mcp_atlassian.jira.attachment_cache import get_attachment_cache
 from mcp_atlassian.jira.config import JiraConfig
 from mcp_atlassian.jira.upload_staging import get_upload_staging
-from mcp_atlassian.utils.environment import get_available_services
 from mcp_atlassian.utils.env import is_env_truthy
+from mcp_atlassian.utils.environment import get_available_services
 from mcp_atlassian.utils.io import (
     get_cli_bitbucket_read_only_flag,
     get_cli_confluence_read_only_flag,
@@ -354,10 +354,16 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict]:
     if services.get("bitbucket"):
         try:
             bitbucket_config = BitbucketConfig.from_env()
-            loaded_bitbucket_config = bitbucket_config
-            logger.info(
-                "Bitbucket configuration loaded and authentication is configured."
-            )
+            if bitbucket_config.is_auth_configured():
+                loaded_bitbucket_config = bitbucket_config
+                logger.info(
+                    "Bitbucket configuration loaded and authentication is configured."
+                )
+            else:
+                logger.warning(
+                    "Bitbucket URL found, but authentication is not fully configured. "
+                    "Bitbucket tools will be unavailable."
+                )
         except Exception as e:
             logger.error(f"Failed to load Bitbucket configuration: {e}", exc_info=True)
     if services.get("xray"):
@@ -1280,8 +1286,7 @@ class UserTokenMiddleware:
                     return
 
                 logger.debug(
-                    "UserTokenMiddleware.__call__: PAT extracted "
-                    "(token_present=true)"
+                    "UserTokenMiddleware.__call__: PAT extracted (token_present=true)"
                 )
                 scope_copy["state"]["user_atlassian_token"] = token
                 scope_copy["state"]["user_atlassian_auth_type"] = "pat"
@@ -1393,9 +1398,7 @@ class UserTokenMiddleware:
 
 
 def _get_allowed_redirect_uris() -> list[str]:
-    parsed = parse_env_list(
-        os.getenv("ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS")
-    )
+    parsed = parse_env_list(os.getenv("ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS"))
     return DEFAULT_ALLOWED_REDIRECT_URIS if parsed is None else parsed
 
 
@@ -1455,14 +1458,11 @@ def _product_public_base_url(product: str) -> str:
 
     configured_products = _get_configured_data_center_oauth_products()
     base_path_parts = [
-        part.lower()
-        for part in urlparse(public_base_url).path.split("/")
-        if part
+        part.lower() for part in urlparse(public_base_url).path.split("/") if part
     ]
     configured_suffix = (
         base_path_parts[-1]
-        if base_path_parts
-        and base_path_parts[-1] in DATA_CENTER_OAUTH_PRODUCTS
+        if base_path_parts and base_path_parts[-1] in DATA_CENTER_OAUTH_PRODUCTS
         else None
     )
     if configured_suffix:
@@ -1532,32 +1532,25 @@ def _build_auth_provider(
     client_secret = _get_product_oauth_value(oauth_product, "CLIENT_SECRET")
     redirect_uri = _get_product_oauth_value(oauth_product, "REDIRECT_URI")
 
-    missing = [
-        name
-        for name, value in (
-            ("instance URL", instance_url),
-            ("OAuth client ID", client_id),
-            ("OAuth client secret", client_secret),
-            ("OAuth redirect URI", redirect_uri),
-        )
-        if not value
-    ]
-    if missing:
+    if not instance_url or not client_id or not client_secret or not redirect_uri:
+        missing = [
+            name
+            for name, value in (
+                ("instance URL", instance_url),
+                ("OAuth client ID", client_id),
+                ("OAuth client secret", client_secret),
+                ("OAuth redirect URI", redirect_uri),
+            )
+            if not value
+        ]
         raise ValueError(
             "OAuth mode is enabled but required configuration is missing: "
             + ", ".join(missing)
         )
 
-    assert instance_url is not None
-    assert client_id is not None
-    assert client_secret is not None
-    assert redirect_uri is not None
-
     scope_value = _get_product_oauth_value(oauth_product, "SCOPE")
     scopes = parse_env_list(scope_value) or []
-    upstream_authorize, upstream_token = _resolve_upstream_oauth_endpoints(
-        instance_url
-    )
+    upstream_authorize, upstream_token = _resolve_upstream_oauth_endpoints(instance_url)
     parsed_redirect = urlparse(redirect_uri)
     redirect_path = parsed_redirect.path or "/callback"
     base_url = public_base_url or os.getenv("PUBLIC_BASE_URL")
@@ -1691,9 +1684,7 @@ class MultiProductDataCenterMCP(AtlassianMCP):
                 route.path
                 for route in product_app.routes
                 if isinstance(route, Route)
-                and route.path.startswith(
-                    "/.well-known/oauth-protected-resource/"
-                )
+                and route.path.startswith("/.well-known/oauth-protected-resource/")
             )
             routes.append(
                 _copy_route(
@@ -1738,10 +1729,7 @@ def _build_main_mcp() -> AtlassianMCP:
             ", ".join(data_center_products),
         )
         return MultiProductDataCenterMCP(
-            {
-                product: _build_product_mcp(product)
-                for product in data_center_products
-            }
+            {product: _build_product_mcp(product) for product in data_center_products}
         )
 
     if is_env_truthy(OAUTH_PROXY_ENABLE_ENV, "false"):

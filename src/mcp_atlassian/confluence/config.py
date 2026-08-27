@@ -162,10 +162,7 @@ class ConfluenceConfig:
                         and self.oauth_config.client_secret
                         and self.oauth_config.redirect_uri
                         and self.oauth_config.scope
-                        and (
-                            self.oauth_config.cloud_id
-                            or self.oauth_config.base_url
-                        )
+                        and (self.oauth_config.cloud_id or self.oauth_config.base_url)
                     ):
                         return True
                     # Minimal OAuth configuration (user-provided tokens mode)

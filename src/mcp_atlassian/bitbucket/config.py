@@ -1,5 +1,6 @@
 """Configuration module for Bitbucket API interactions."""
 
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -67,17 +68,42 @@ class BitbucketConfig:
         return self.ssl_verify
 
     def is_auth_configured(self) -> bool:
-        """Check if authentication is properly configured.
+        """Check if authentication is complete and valid for API calls.
 
         Returns:
             True if authentication is configured, False otherwise.
         """
+        logger = logging.getLogger("mcp-atlassian.bitbucket.config")
         if self.auth_type == "oauth":
-            return bool(self.oauth_config)
+            if isinstance(self.oauth_config, OAuthConfig):
+                has_target = bool(
+                    self.oauth_config.cloud_id or self.oauth_config.is_data_center
+                )
+                has_full_config = bool(
+                    self.oauth_config.client_id
+                    and self.oauth_config.client_secret
+                    and self.oauth_config.redirect_uri
+                    and self.oauth_config.scope
+                )
+                has_minimal_config = bool(
+                    not self.oauth_config.client_id
+                    and not self.oauth_config.client_secret
+                )
+                if has_target and (has_full_config or has_minimal_config):
+                    return True
+            elif isinstance(self.oauth_config, BYOAccessTokenOAuthConfig):
+                if self.oauth_config.cloud_id and self.oauth_config.access_token:
+                    return True
+
+            logger.warning("Incomplete OAuth configuration detected")
+            return False
         elif self.auth_type == "pat":
             return bool(self.personal_token)
         elif self.auth_type == "basic":
             return bool(self.username and self.app_password)
+        logger.warning(
+            "Unknown or unsupported auth_type: %s in BitbucketConfig", self.auth_type
+        )
         return False
 
     @classmethod

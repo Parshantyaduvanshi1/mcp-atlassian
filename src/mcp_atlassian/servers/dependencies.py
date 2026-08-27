@@ -49,9 +49,7 @@ def _resolve_oauth_token(
     if not access_token or not access_token.token:
         return fallback_token
     if access_token.token != fallback_token:
-        logger.debug(
-            "Resolved upstream %s token from FastMCP OAuth context", service
-        )
+        logger.debug("Resolved upstream %s token from FastMCP OAuth context", service)
     return access_token.token
 
 

@@ -87,9 +87,7 @@ class JiraConfig:
         personal_token = os.getenv("JIRA_PERSONAL_TOKEN")
 
         # Check for OAuth configuration
-        oauth_config = get_oauth_config_from_env(
-            service_url=url, service_type="jira"
-        )
+        oauth_config = get_oauth_config_from_env(service_url=url, service_type="jira")
         auth_type = None
 
         # Use the shared utility function directly
@@ -162,10 +160,7 @@ class JiraConfig:
                         and self.oauth_config.client_secret
                         and self.oauth_config.redirect_uri
                         and self.oauth_config.scope
-                        and (
-                            self.oauth_config.cloud_id
-                            or self.oauth_config.base_url
-                        )
+                        and (self.oauth_config.cloud_id or self.oauth_config.base_url)
                     ):
                         return True
                     # Minimal OAuth configuration (user-provided tokens mode)

@@ -44,8 +44,7 @@ class XrayClient:
         # Initialize the Xray client based on auth type
         if self.config.auth_type == "oauth":
             if not self.config.oauth_config or not (
-                self.config.oauth_config.cloud_id
-                or self.config.oauth_config.base_url
+                self.config.oauth_config.cloud_id or self.config.oauth_config.base_url
             ):
                 error_msg = (
                     "OAuth authentication requires a cloud_id for Cloud or "

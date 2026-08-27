@@ -127,6 +127,12 @@ CONFLUENCE_OAUTH_CLIENT_SECRET=your_confluence_client_secret
 CONFLUENCE_OAUTH_REDIRECT_URI=https://mcp.example.com/confluence/oauth/callback
 CONFLUENCE_OAUTH_SCOPE=READ WRITE
 
+BITBUCKET_URL=https://confluence.example.com
+BITBUCKET_OAUTH_CLIENT_ID=your_confluence_client_id
+BITBUCKET_OAUTH_CLIENT_SECRET=your_confluence_client_secret
+BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/confluence/oauth/callback
+BITBUCKET_OAUTH_SCOPE=READ WRITE
+
 ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS=http://127.0.0.1:*,http://localhost:*
 ATLASSIAN_OAUTH_REQUIRE_CONSENT=true
 ```
@@ -158,6 +164,10 @@ Configure MCP clients without PAT or product-selection headers:
     "confluence-dc": {
       "type": "http",
       "url": "https://mcp.example.com/confluence/mcp"
+    },
+    "bitbucket-dc": {
+      "type": "http",
+      "url": "https://mcp.example.com/bitbucket/mcp"
     }
   }
 }
@@ -166,7 +176,7 @@ Configure MCP clients without PAT or product-selection headers:
 The ingress must forward product paths and root `/.well-known/*` OAuth
 discovery paths to the same port without stripping product prefixes. Use one
 replica and persist `/home/app/.local/share/fastmcp`; each product has an
-independent encrypted DCR/token store. 
+independent encrypted DCR/token store.
 
 **Data Center OAuth setup:**
 
@@ -227,14 +237,12 @@ If you are running mcp-atlassian part of a larger system that manages Atlassian 
 
 **Requirements:**
 - A valid Atlassian OAuth 2.0 Access Token with the necessary scopes for the intended operations.
-- Cloud: the corresponding `ATLASSIAN_OAUTH_CLOUD_ID`.
-- Data Center: the matching `JIRA_URL` or `CONFLUENCE_URL`.
+- The corresponding `ATLASSIAN_OAUTH_CLOUD_ID` for your Atlassian instance.
 
 **Configuration:**
 To use this method, set the following environment variables (or use the corresponding command-line flags when starting the server):
 - `ATLASSIAN_OAUTH_CLOUD_ID`: Your Atlassian Cloud ID. (CLI: `--oauth-cloud-id`)
 - `ATLASSIAN_OAUTH_ACCESS_TOKEN`: Your pre-existing OAuth 2.0 access token. (CLI: `--oauth-access-token`)
-- For separate Data Center products, use `JIRA_OAUTH_ACCESS_TOKEN`, `CONFLUENCE_OAUTH_ACCESS_TOKEN`, or `BITBUCKET_OAUTH_ACCESS_TOKEN`.
 
 **Important Considerations for BYOT:**
 - **Token Lifecycle Management:** When using BYOT, the MCP server **does not** handle token refresh. The responsibility for obtaining, refreshing (before expiry), and revoking the access token lies entirely with you or the external system providing the token.

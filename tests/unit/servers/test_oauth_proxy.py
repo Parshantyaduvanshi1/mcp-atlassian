@@ -22,7 +22,7 @@ def _set_jira_dc_oauth_env(monkeypatch) -> None:
         "JIRA_OAUTH_REDIRECT_URI",
         "https://mcp.example.com/jira/oauth/callback",
     )
-    monkeypatch.setenv("PUBLIC_BASE_URL", "https://mcp.example.com/jira")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://mcp.example.com")
     monkeypatch.setenv("JIRA_OAUTH_SCOPE", "WRITE")
 
 
@@ -202,9 +202,7 @@ def test_multi_product_dc_oauth_builds_one_server_with_isolated_products(
         == "https://jira.example.com/rest/oauth2/latest/authorize"
     )
     assert (
-        server.product_servers[
-            "confluence"
-        ].auth._upstream_authorization_endpoint
+        server.product_servers["confluence"].auth._upstream_authorization_endpoint
         == "https://confluence.example.com/rest/oauth2/latest/authorize"
     )
 

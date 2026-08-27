@@ -173,7 +173,6 @@ logger = setup_logging(logging_level, logging_stream)
     help="Atlassian Cloud OAuth 2.0 access token (if you have your own you'd like to "
     "use for the session.)",
 )
-
 def main(
     verbose: int,
     env_file: str | None,
@@ -285,9 +284,7 @@ def main(
         )
         final_auth_mode = "header"
     os.environ["MCP_AUTH_MODE"] = final_auth_mode
-    os.environ["ATLASSIAN_OAUTH_PROXY_ENABLE"] = str(
-        final_auth_mode == "oauth"
-    ).lower()
+    os.environ["ATLASSIAN_OAUTH_PROXY_ENABLE"] = str(final_auth_mode == "oauth").lower()
     logger.info("Authentication mode: %s", final_auth_mode)
 
     # Transport precedence
@@ -302,9 +299,7 @@ def main(
     logger.debug(f"Final transport determined: {final_transport}")
 
     if final_auth_mode == "oauth" and final_transport != "streamable-http":
-        raise click.UsageError(
-            "--auth-mode oauth requires --transport streamable-http"
-        )
+        raise click.UsageError("--auth-mode oauth requires --transport streamable-http")
 
     # Port precedence
     final_port = 8000

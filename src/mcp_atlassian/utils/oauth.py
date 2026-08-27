@@ -25,15 +25,11 @@ from .urls import is_atlassian_cloud_url
 # Configure logging
 logger = logging.getLogger("mcp-atlassian.oauth")
 
-# Cloud OAuth endpoints. Data Center browser OAuth uses only the endpoint paths
-# below; FastMCP owns its authorization-code exchange and token lifecycle.
-CLOUD_TOKEN_URL = "https://auth.atlassian.com/oauth/token"  # noqa: S105
-CLOUD_AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
+# Constants
+TOKEN_URL = "https://auth.atlassian.com/oauth/token"  # noqa: S105 - This is a public API endpoint URL, not a password
+AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 CLOUD_ID_URL = "https://api.atlassian.com/oauth/token/accessible-resources"
 
-# Legacy aliases for backwards compatibility
-TOKEN_URL = CLOUD_TOKEN_URL  # noqa: S105
-AUTHORIZE_URL = CLOUD_AUTHORIZE_URL
 
 # Data Center browser OAuth endpoint paths
 DC_TOKEN_PATH = "/rest/oauth2/latest/token"  # noqa: S105
@@ -154,8 +150,8 @@ class OAuthConfig:
 
             if "refresh_token" not in token_data:
                 logger.error(
-                    "Refresh token not found in response. Ensure 'offline_access' "
-                    f"scope is included. Keys found: {list(token_data.keys())}"
+                    "Refresh token not found in response. Ensure 'offline_access' scope is included. "
+                    f"Keys found: {list(token_data.keys())}"
                 )
                 return False
 
@@ -171,7 +167,13 @@ class OAuthConfig:
 
             # Log success message with token details
             logger.info(
-                f"OAuth token exchange successful! Access token expires in {token_data['expires_in']}s."
+                f"✅ OAuth token exchange successful! Access token expires in {token_data['expires_in']}s."
+            )
+            logger.info(
+                f"Access Token (partial): {self.access_token[:10]}...{self.access_token[-5:] if self.access_token else ''}"
+            )
+            logger.info(
+                f"Refresh Token (partial): {self.refresh_token[:5]}...{self.refresh_token[-3:] if self.refresh_token else ''}"
             )
             if self.cloud_id:
                 logger.info(f"Cloud ID successfully retrieved: {self.cloud_id}")

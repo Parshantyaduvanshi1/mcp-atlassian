@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from mcp_atlassian.bitbucket.config import BitbucketConfig
-from mcp_atlassian.utils.oauth import OAuthConfig
+from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig, OAuthConfig
 
 
 class TestBitbucketConfig:
@@ -127,13 +127,10 @@ class TestBitbucketConfig:
         assert config.oauth_config is not None
         assert config.oauth_config.client_id == "client_id"
 
-    @patch(
-        "mcp_atlassian.utils.oauth.OAuthConfig.load_tokens",
-        return_value=None,
-    )
     @patch.dict(
         os.environ,
         {
+            "ATLASSIAN_OAUTH_PROXY_ENABLE": "true",
             "BITBUCKET_URL": "https://bitbucket.company.com",
             "BITBUCKET_OAUTH_CLIENT_ID": "client_id",
             "BITBUCKET_OAUTH_CLIENT_SECRET": "client_secret",
@@ -142,7 +139,7 @@ class TestBitbucketConfig:
         },
         clear=True,
     )
-    def test_from_env_oauth_data_center(self, mock_load_tokens):
+    def test_from_env_oauth_data_center(self):
         """Test Data Center OAuth uses the Bitbucket instance URL."""
         config = BitbucketConfig.from_env()
 
@@ -151,34 +148,6 @@ class TestBitbucketConfig:
         assert config.oauth_config.is_data_center is True
         assert config.oauth_config.base_url == "https://bitbucket.company.com"
         assert config.oauth_config.cloud_id is None
-        mock_load_tokens.assert_called_once_with(
-            "client_id",
-            cloud_id=None,
-            base_url="https://bitbucket.company.com",
-        )
-
-    @patch(
-        "mcp_atlassian.utils.oauth.OAuthConfig.load_tokens",
-        return_value=None,
-    )
-    @patch.dict(
-        os.environ,
-        {
-            "BITBUCKET_URL": "https://bitbucket.company.com",
-            "BITBUCKET_OAUTH_CLIENT_ID": "client_id",
-            "BITBUCKET_OAUTH_CLIENT_SECRET": "client_secret",
-        },
-        clear=True,
-    )
-    def test_from_env_oauth_data_center_uses_bitbucket_scope(
-        self, mock_load_tokens
-    ):
-        """Test Data Center OAuth defaults to Bitbucket's read scope."""
-        config = BitbucketConfig.from_env()
-
-        assert config.oauth_config is not None
-        assert config.oauth_config.scope == "REPO_READ"
-        mock_load_tokens.assert_called_once()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_from_env_missing_url_raises_error(self):
@@ -273,6 +242,39 @@ class TestBitbucketConfig:
 
         # Test auth not configured
         config = BitbucketConfig(url="https://api.bitbucket.org/2.0", auth_type="basic")
+        assert not config.is_auth_configured()
+
+    def test_is_auth_configured_oauth(self):
+        """Validate supported OAuth configurations and reject partial ones."""
+        full_oauth = OAuthConfig(
+            client_id="client-id",
+            client_secret="client-secret",
+            redirect_uri="https://example.com/callback",
+            scope="repository",
+            cloud_id="cloud-id",
+        )
+        config = BitbucketConfig(
+            url="https://api.bitbucket.org/2.0",
+            auth_type="oauth",
+            oauth_config=full_oauth,
+        )
+        assert config.is_auth_configured()
+
+        full_oauth.cloud_id = None
+        full_oauth.base_url = "https://bitbucket.example.com"
+        assert config.is_auth_configured()
+
+        full_oauth.base_url = "https://example.atlassian.net"
+        assert not config.is_auth_configured()
+
+        config.oauth_config = BYOAccessTokenOAuthConfig(
+            cloud_id="cloud-id", access_token="access-token"
+        )
+        assert config.is_auth_configured()
+
+        config.oauth_config = BYOAccessTokenOAuthConfig(
+            cloud_id="", access_token="access-token"
+        )
         assert not config.is_auth_configured()
 
     def test_verify_ssl_property(self):

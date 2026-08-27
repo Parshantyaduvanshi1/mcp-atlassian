@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import time
 from typing import Literal
 
 import httpx
@@ -11,6 +10,8 @@ from cachetools import TTLCache
 from fastmcp.server.auth.auth import AccessToken, TokenVerifier
 
 from mcp_atlassian.utils.urls import is_atlassian_cloud_url
+
+DEFAULT_TOKEN_CACHE_TTL_SECONDS = 60
 
 
 class AtlassianDataCenterTokenVerifier(TokenVerifier):
@@ -21,15 +22,33 @@ class AtlassianDataCenterTokenVerifier(TokenVerifier):
         instance_url: str,
         product: Literal["jira", "confluence", "bitbucket"],
         required_scopes: list[str] | None = None,
+        cache_ttl_seconds: int = DEFAULT_TOKEN_CACHE_TTL_SECONDS,
     ) -> None:
+        """Initialize the token verifier.
+
+        Args:
+            instance_url: Base URL of the Atlassian Data Center product.
+            product: Product whose authenticated endpoint validates the token.
+            required_scopes: OAuth scopes forced during upstream authorization.
+            cache_ttl_seconds: Seconds to cache successful validation results.
+
+        Raises:
+            ValueError: If the URL is an Atlassian Cloud URL or the cache TTL is
+                negative.
+        """
         super().__init__(required_scopes=required_scopes)
         if is_atlassian_cloud_url(instance_url):
             raise ValueError(
                 "AtlassianDataCenterTokenVerifier does not support Cloud URLs"
             )
+        if cache_ttl_seconds < 0:
+            raise ValueError("Token validation cache TTL cannot be negative")
         self.instance_url = instance_url
         self.product = product
-        self._cache: TTLCache[str, AccessToken] = TTLCache(maxsize=256, ttl=300)
+        self._cache: TTLCache[str, AccessToken] = TTLCache(
+            maxsize=256,
+            ttl=cache_ttl_seconds,
+        )
 
     async def _validate_data_center_token(self, token: str) -> bool:
         """Validate a token against a lightweight authenticated product API."""
@@ -77,7 +96,6 @@ class AtlassianDataCenterTokenVerifier(TokenVerifier):
             token=token,
             client_id="atlassian",
             scopes=self.required_scopes or [],
-            expires_at=int(time.time()) + 86400 * 30,
             claims={"base_url": self.instance_url.rstrip("/")},
         )
         self._cache[token_hash] = access_token
