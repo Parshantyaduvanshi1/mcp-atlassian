@@ -1644,12 +1644,17 @@ def _copy_route(app: Starlette, source_path: str, target_path: str) -> Route:
     raise ValueError(f"OAuth metadata route not found: {source_path}")
 
 
-class MultiProductDataCenterMCP(AtlassianMCP):
+class CompositeAtlassianMCP(AtlassianMCP):
     """One HTTP process hosting isolated Data Center OAuth applications."""
 
-    def __init__(self, product_servers: dict[str, AtlassianMCP]) -> None:
+    def __init__(
+        self,
+        product_servers: dict[str, AtlassianMCP],
+        header_server: AtlassianMCP | None = None,
+    ) -> None:
         super().__init__(name="Atlassian Data Center MCP")
         self.product_servers = product_servers
+        self.header_server = header_server
 
     def http_app(
         self,
@@ -1701,10 +1706,22 @@ class MultiProductDataCenterMCP(AtlassianMCP):
                 )
             )
 
+        header_app = None
+        if self.header_server is not None:
+            header_app = self.header_server.http_app(
+                path=mcp_path,
+                middleware=middleware,
+                transport="streamable-http",
+                stateless_http=stateless_http,
+                **kwargs,
+            )
+
         routes.extend(
             Mount(f"/{product}", app=product_app)
             for product, product_app in product_apps.items()
         )
+        if header_app is not None:
+            routes.append(Mount("/", app=header_app))
 
         @asynccontextmanager
         async def lifespan(app: Starlette) -> AsyncIterator[None]:
@@ -1712,6 +1729,10 @@ class MultiProductDataCenterMCP(AtlassianMCP):
                 for product_app in product_apps.values():
                     await stack.enter_async_context(
                         product_app.router.lifespan_context(product_app)
+                    )
+                if header_app is not None:
+                    await stack.enter_async_context(
+                        header_app.router.lifespan_context(header_app)
                     )
                 yield
 
@@ -1721,24 +1742,8 @@ class MultiProductDataCenterMCP(AtlassianMCP):
         return app
 
 
-def _build_main_mcp() -> AtlassianMCP:
-    data_center_products = _get_configured_data_center_oauth_products()
-    if data_center_products:
-        logger.info(
-            "Starting multi-product Data Center OAuth routes for: %s",
-            ", ".join(data_center_products),
-        )
-        return MultiProductDataCenterMCP(
-            {product: _build_product_mcp(product) for product in data_center_products}
-        )
-
-    if is_env_truthy(OAUTH_PROXY_ENABLE_ENV, "false"):
-        raise ValueError(
-            "Browser OAuth proxy mode requires complete Jira, Confluence, or "
-            "Bitbucket Data Center OAuth configuration. Cloud browser proxy "
-            "support is not enabled."
-        )
-
+def _build_header_mcp() -> AtlassianMCP:
+    """Build the server used by token and product-header clients."""
     server = AtlassianMCP(
         name="Atlassian MCP",
         lifespan=main_lifespan,
@@ -1749,6 +1754,32 @@ def _build_main_mcp() -> AtlassianMCP:
     server.mount(bitbucket_mcp, prefix="bitbucket")
     server.mount(xray_mcp, prefix="xray")
     return server
+
+
+def _build_main_mcp() -> AtlassianMCP:
+    data_center_products = _get_configured_data_center_oauth_products()
+    if data_center_products:
+        logger.info(
+            "Starting multi-product Data Center OAuth routes for: %s",
+            ", ".join(data_center_products),
+        )
+        return CompositeAtlassianMCP(
+            {product: _build_product_mcp(product) for product in data_center_products},
+            header_server=(
+                _build_header_mcp()
+                if os.getenv("MCP_AUTH_MODE", "").lower() == "both"
+                else None
+            ),
+        )
+
+    if is_env_truthy(OAUTH_PROXY_ENABLE_ENV, "false"):
+        raise ValueError(
+            "Browser OAuth proxy mode requires complete Jira, Confluence, or "
+            "Bitbucket Data Center OAuth configuration. Cloud browser proxy "
+            "support is not enabled."
+        )
+
+    return _build_header_mcp()
 
 
 main_mcp = _build_main_mcp()

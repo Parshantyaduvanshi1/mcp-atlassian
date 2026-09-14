@@ -152,6 +152,28 @@ uv run mcp-atlassian \
   --auth-mode oauth
 ```
 
+To serve browser OAuth and header-based clients from the same process, use
+`--auth-mode both` (or `MCP_AUTH_MODE=both`). The authentication methods use
+separate MCP endpoints so OAuth protection cannot be bypassed:
+
+| Authentication | MCP endpoint |
+|---|---|
+| Header/PAT | `/mcp` |
+| Jira browser OAuth | `/jira/mcp` |
+| Confluence browser OAuth | `/confluence/mcp` |
+| Bitbucket browser OAuth | `/bitbucket/mcp` |
+
+```bash
+uv run mcp-atlassian \
+  --transport streamable-http \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --auth-mode both
+```
+
+Header clients continue to send their existing `X-Atlassian-*` URL and token
+headers to `/mcp`. Browser OAuth clients use the matching product endpoint.
+
 Configure MCP clients without PAT or product-selection headers:
 
 ```json

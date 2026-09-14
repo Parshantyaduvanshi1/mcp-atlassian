@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from mcp_atlassian.servers.main import (
     AtlassianMCP,
-    MultiProductDataCenterMCP,
+    CompositeAtlassianMCP,
     _build_auth_provider,
     _build_main_mcp,
 )
@@ -193,7 +193,7 @@ def test_multi_product_dc_oauth_builds_one_server_with_isolated_products(
 
     server = _build_main_mcp()
 
-    assert isinstance(server, MultiProductDataCenterMCP)
+    assert isinstance(server, CompositeAtlassianMCP)
     assert set(server.product_servers) == {"jira", "confluence"}
     assert server.product_servers["jira"].oauth_product == "jira"
     assert server.product_servers["confluence"].oauth_product == "confluence"
@@ -224,7 +224,7 @@ def test_single_jira_dc_accepts_existing_product_public_base(monkeypatch, tmp_pa
 
     server = _build_main_mcp()
 
-    assert isinstance(server, MultiProductDataCenterMCP)
+    assert isinstance(server, CompositeAtlassianMCP)
     provider = server.product_servers["jira"].auth
     assert str(provider.base_url).rstrip("/") == "http://localhost:8000/jira"
     assert provider._redirect_path == "/oauth/callback"
@@ -298,6 +298,47 @@ def test_multi_product_dc_oauth_has_no_ambiguous_root_mcp(monkeypatch, tmp_path)
         response = client.post("/mcp", json={})
 
     assert response.status_code == 404
+
+
+def test_combined_mode_exposes_header_and_oauth_endpoints(monkeypatch, tmp_path):
+    _set_multi_product_dc_oauth_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("MCP_AUTH_MODE", "both")
+    app = _build_main_mcp().http_app(path="/mcp", transport="streamable-http")
+
+    initialize_request = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "test-client", "version": "1.0"},
+        },
+    }
+    common_headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+
+    with TestClient(app, base_url="https://mcp.example.com") as client:
+        header_response = client.post(
+            "/mcp",
+            json=initialize_request,
+            headers={
+                **common_headers,
+                "X-Atlassian-Jira-Url": "https://jira.example.com",
+                "X-Atlassian-Jira-Personal-Token": "jira-pat",
+            },
+        )
+        oauth_response = client.post(
+            "/jira/mcp",
+            json=initialize_request,
+            headers=common_headers,
+        )
+
+    assert header_response.status_code == 200
+    assert oauth_response.status_code == 401
+    assert oauth_response.headers["www-authenticate"].startswith("Bearer ")
 
 
 def test_oauth_mode_challenges_request_without_auth_header(monkeypatch):

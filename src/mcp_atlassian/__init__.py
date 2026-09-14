@@ -50,12 +50,12 @@ logger = setup_logging(logging_level, logging_stream)
 )
 @click.option(
     "--auth-mode",
-    type=click.Choice(["header", "oauth"]),
+    type=click.Choice(["header", "oauth", "both"]),
     default=None,
     help=(
         "Authentication mode: 'header' keeps token-based request headers "
-        "(default); 'oauth' enables Data Center browser OAuth over "
-        "streamable HTTP"
+        "(default); 'oauth' enables Data Center browser OAuth; 'both' "
+        "exposes both flows over streamable HTTP"
     ),
 )
 @click.option(
@@ -277,14 +277,16 @@ def main(
     final_auth_mode = (configured_auth_mode or "header").lower()
     if click_ctx and was_option_provided(click_ctx, "auth_mode") and auth_mode:
         final_auth_mode = auth_mode
-    if final_auth_mode not in {"header", "oauth"}:
+    if final_auth_mode not in {"header", "oauth", "both"}:
         logger.warning(
             "Invalid MCP_AUTH_MODE '%s'; using header authentication.",
             final_auth_mode,
         )
         final_auth_mode = "header"
     os.environ["MCP_AUTH_MODE"] = final_auth_mode
-    os.environ["ATLASSIAN_OAUTH_PROXY_ENABLE"] = str(final_auth_mode == "oauth").lower()
+    os.environ["ATLASSIAN_OAUTH_PROXY_ENABLE"] = str(
+        final_auth_mode in {"oauth", "both"}
+    ).lower()
     logger.info("Authentication mode: %s", final_auth_mode)
 
     # Transport precedence
@@ -298,8 +300,10 @@ def main(
         final_transport = "stdio"
     logger.debug(f"Final transport determined: {final_transport}")
 
-    if final_auth_mode == "oauth" and final_transport != "streamable-http":
-        raise click.UsageError("--auth-mode oauth requires --transport streamable-http")
+    if final_auth_mode in {"oauth", "both"} and final_transport != "streamable-http":
+        raise click.UsageError(
+            f"--auth-mode {final_auth_mode} requires --transport streamable-http"
+        )
 
     # Port precedence
     final_port = 8000
