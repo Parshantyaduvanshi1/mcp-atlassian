@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
+from typing import Any, Literal
+from urllib.parse import quote
 
 import httpx
 from cachetools import TTLCache
@@ -50,35 +51,73 @@ class AtlassianDataCenterTokenVerifier(TokenVerifier):
             ttl=cache_ttl_seconds,
         )
 
-    async def _validate_data_center_token(self, token: str) -> bool:
-        """Validate a token against a lightweight authenticated product API."""
-        validation_paths = {
-            "jira": "/rest/api/2/myself",
-            "confluence": "/rest/api/user/current",
-            "bitbucket": "/rest/api/1.0/projects?limit=1",
-        }
-        if self.product not in validation_paths:
-            return False
-
-        validation_url = (
-            f"{self.instance_url.rstrip('/')}{validation_paths[self.product]}"
-        )
+    async def _get_json(self, token: str, path: str) -> dict[str, Any] | None:
+        """Get a JSON object from an authenticated Data Center endpoint."""
+        url = f"{self.instance_url.rstrip('/')}{path}"
         try:
             async with httpx.AsyncClient(
                 timeout=20,
                 follow_redirects=False,
             ) as client:
                 response = await client.get(
-                    validation_url,
+                    url,
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/json",
                     },
                 )
             response.raise_for_status()
-            return isinstance(response.json(), dict)
+            data = response.json()
+            return data if isinstance(data, dict) else None
         except (httpx.HTTPError, ValueError):
-            return False
+            return None
+
+    async def get_user_info(self, token: str) -> dict[str, Any] | None:
+        """Return the profile associated with a Data Center access token."""
+        profile_paths = {
+            "jira": "/rest/api/2/myself",
+            "confluence": "/rest/api/user/current",
+        }
+        if self.product in profile_paths:
+            return await self._get_json(token, profile_paths[self.product])
+        if self.product != "bitbucket":
+            return None
+
+        whoami_url = f"{self.instance_url.rstrip('/')}/plugins/servlet/applinks/whoami"
+        try:
+            async with httpx.AsyncClient(
+                timeout=20,
+                follow_redirects=False,
+            ) as client:
+                response = await client.get(
+                    whoami_url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "text/plain",
+                    },
+                )
+            response.raise_for_status()
+            username = response.text.strip()
+        except httpx.HTTPError:
+            return None
+        if not username:
+            return None
+        return await self._get_json(
+            token,
+            f"/rest/api/1.0/users/{quote(username, safe='')}",
+        )
+
+    async def _validate_data_center_token(self, token: str) -> bool:
+        """Validate a token against a lightweight authenticated product API."""
+        if self.product in {"jira", "confluence"}:
+            return await self.get_user_info(token) is not None
+        if self.product == "bitbucket":
+            validation = await self._get_json(
+                token,
+                "/rest/api/1.0/projects?limit=1",
+            )
+            return validation is not None
+        return False
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if not token:
@@ -89,14 +128,21 @@ class AtlassianDataCenterTokenVerifier(TokenVerifier):
         if cached:
             return cached
 
-        if not await self._validate_data_center_token(token):
-            return None
+        user_info = await self.get_user_info(token)
+        if user_info is None:
+            if self.product != "bitbucket":
+                return None
+            if not await self._validate_data_center_token(token):
+                return None
 
+        claims: dict[str, Any] = {"base_url": self.instance_url.rstrip("/")}
+        if user_info is not None:
+            claims["user_info"] = user_info
         access_token = AccessToken(
             token=token,
             client_id="atlassian",
             scopes=self.required_scopes or [],
-            claims={"base_url": self.instance_url.rstrip("/")},
+            claims=claims,
         )
         self._cache[token_hash] = access_token
         return access_token
